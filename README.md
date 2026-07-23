@@ -98,14 +98,16 @@ guardrails-gateway/
 ├── docker-compose.yml
 ├── requirements.api.txt
 ├── requirements.ui.txt
-└── README.md
+├── pytest.ini
+├── README.md
+└── .gitignore
 ```
 
 ---
 
 # Installation
 
-## Clone
+## Clone Repository
 
 ```bash
 git clone <repository-url>
@@ -149,7 +151,7 @@ pip install -r requirements.ui.txt
 uvicorn app.main:app --reload
 ```
 
-Swagger
+API Documentation:
 
 ```
 http://localhost:8000/docs
@@ -189,7 +191,7 @@ python cli.py ^
 
 ---
 
-# Docker
+# 🐳 Docker Deployment
 
 Build
 
@@ -203,16 +205,25 @@ Run
 docker compose up
 ```
 
-API
+## Access the Application
+
+### FastAPI Swagger
 
 ```
 http://localhost:8000/docs
 ```
 
-UI
+### Streamlit UI
 
 ```
 http://localhost:8501
+```
+
+---
+## Stop Containers
+
+```bash
+docker compose down
 ```
 
 ---
