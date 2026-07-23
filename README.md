@@ -369,12 +369,19 @@ Detects
 
 ## Streamlit UI
 
-_Add your Streamlit UI screenshot here._
+![Streamlit UI](docs/streamlit-ui.png)
 
-## Swagger UI
+## FastAPI Swagger
 
-_Add your Swagger UI screenshot here._
+![Swagger](docs/swagger.png)
 
+## Pytest Results
+
+![Pytest](docs/pytest.png)
+
+## Docker Deployment
+
+![Docker](docs/docker.png)
 ---
 
 # Author
