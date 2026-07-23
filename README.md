@@ -145,6 +145,7 @@ pip install -r requirements.ui.txt
 
 ---
 
+
 # Running the Backend
 
 ```bash
@@ -159,6 +160,7 @@ http://localhost:8000/docs
 
 ---
 
+
 # Running the Streamlit UI
 
 ```bash
@@ -172,6 +174,7 @@ http://localhost:8501
 ```
 
 ---
+
 
 # Running the CLI
 
@@ -190,6 +193,7 @@ python cli.py ^
 ```
 
 ---
+
 
 # 🐳 Docker Deployment
 
@@ -227,6 +231,7 @@ docker compose down
 ```
 
 ---
+
 
 # API Endpoints
 
@@ -274,6 +279,7 @@ Output
 
 ---
 
+
 # Running Tests
 
 ```bash
@@ -287,6 +293,7 @@ Example
 ```
 
 ---
+
 
 # Detection Rules
 
