@@ -51,8 +51,7 @@ Based on the detected risks, the gateway decides whether to:
                      │
       ┌──────────────┼──────────────┐
       │              │              │
-Prompt        PII Detector    RAG Detector
-Injection
+Prompt Injection PII Detector  RAG Detector
       └──────────────┼──────────────┘
                      │
                Risk Scoring
