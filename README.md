@@ -362,5 +362,3 @@ _Add your Swagger UI screenshot here._
 # Author
 
 **Dhrumil Moga**
-
-M.Tech Student | VLSI & Semiconductor Enthusiast
