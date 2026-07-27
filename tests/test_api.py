@@ -44,3 +44,12 @@ def test_analyze():
     assert data["decision"] == "allow"
 
     assert data["risk_score"] == 0
+
+def test_invalid_payload():
+
+    response = client.post(
+        "/analyze",
+        json={}
+    )
+
+    assert response.status_code == 422

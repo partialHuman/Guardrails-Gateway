@@ -20,32 +20,31 @@ def calculate_score(reasons: list[Reason]) -> tuple[int, list[str]]:
     """
     Calculate the overall risk score and collect unique risk tags.
 
+    Scoring is applied once per unique risk category to avoid
+    double-counting multiple matches of the same threat type.
+
     Args:
         reasons: List of detector findings.
 
     Returns:
         Tuple containing:
         - risk score (0-100)
-        - list of unique risk tags
+        - sorted list of unique risk tags
     """
 
+    tags = {reason.tag for reason in reasons}
+
     score = 0
-    tags: set[str] = set()
 
-    for reason in reasons:
+    if "prompt_injection" in tags:
+        score += PROMPT_INJECTION_SCORE
 
-        tags.add(reason.tag)
+    if "rag_injection" in tags:
+        score += RAG_INJECTION_SCORE
 
-        if reason.tag == "prompt_injection":
-            score += PROMPT_INJECTION_SCORE
+    if "pii" in tags:
+        score += PII_SCORE
 
-        elif reason.tag == "rag_injection":
-            score += RAG_INJECTION_SCORE
-
-        elif reason.tag == "pii":
-            score += PII_SCORE
-
-    # Cap score at 100
     score = min(score, 100)
 
     return score, sorted(tags)

@@ -17,3 +17,12 @@ def test_phone_removed():
     )
 
     assert "[REDACTED_PHONE]" in text
+
+def test_email_redacted():
+
+    text = sanitize_prompt(
+        "Contact me at john@gmail.com"
+    )
+
+    assert "john@gmail.com" not in text
+    assert "[REDACTED_EMAIL]" in text
