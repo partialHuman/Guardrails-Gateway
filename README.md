@@ -109,7 +109,7 @@ guardrails-gateway/
 ## Clone Repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/partialHuman/Guardrails-Gateway.git
 
 cd guardrails-gateway
 ```
