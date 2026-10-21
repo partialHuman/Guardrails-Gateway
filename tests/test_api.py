@@ -213,3 +213,24 @@ def test_policy_response_does_not_expose_internal_traceback():
 
     assert response.status_code == 200
     assert "traceback" not in response.text.lower()
+
+def test_unexpected_analyze_error_does_not_return_internal_details():
+    from unittest.mock import patch
+
+    with patch(
+        "app.main.analyze_request",
+        side_effect=RuntimeError("internal secret marker"),
+    ):
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            response = test_client.post(
+                "/analyze",
+                json={
+                    "prompt": "Hello",
+                    "context_docs": [],
+                    "metadata": META,
+                },
+            )
+
+    assert response.status_code == 500
+    assert "internal secret marker" not in response.text.lower()
+    assert "traceback" not in response.text.lower()
