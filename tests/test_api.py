@@ -164,3 +164,52 @@ def test_too_many_context_documents_are_rejected():
     response = analyze("Summarize these documents", docs)
 
     assert response.status_code == 422
+
+
+def test_validation_error_has_structured_response():
+    response = client.post("/analyze", json={})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert "detail" in body
+    assert isinstance(body["detail"], list)
+    assert body["detail"]
+
+
+def test_validation_error_does_not_expose_traceback():
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "",
+            "context_docs": [],
+            "metadata": META,
+        },
+    )
+
+    assert response.status_code == 422
+    body_text = response.text.lower()
+
+    assert "traceback" not in body_text
+    assert "site-packages" not in body_text
+    assert "c:\\users\\" not in body_text
+
+
+def test_unknown_route_returns_not_found():
+    response = client.get("/route-that-does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+
+
+def test_wrong_http_method_returns_method_not_allowed():
+    response = client.get("/analyze")
+
+    assert response.status_code == 405
+    assert response.json() == {"detail": "Method Not Allowed"}
+
+
+def test_policy_response_does_not_expose_internal_traceback():
+    response = client.get("/policy")
+
+    assert response.status_code == 200
+    assert "traceback" not in response.text.lower()
