@@ -1,7 +1,7 @@
 """
 Logging configuration for SentraGuard Lite.
 
-Only logs metadata (request_id, decision, risk score, etc.)
+Only logs metadata (request_id, decision, risk score, rule ids, etc.)
 Never logs prompts or document contents to avoid leaking
 sensitive information.
 """

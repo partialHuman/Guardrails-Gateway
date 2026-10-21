@@ -8,43 +8,50 @@ Converts detector findings into:
 
 from __future__ import annotations
 
-from app.schemas import Reason
-from app.core.policy import (
-    PROMPT_INJECTION_SCORE,
-    RAG_INJECTION_SCORE,
-    PII_SCORE,
-)
+from typing import Iterable
+
+from app.core.findings import Finding
+from app.core.policy import EXTRA_RULE_BONUS, EXTRA_RULE_BONUS_CAP
 
 
-def calculate_score(reasons: list[Reason]) -> tuple[int, list[str]]:
+def calculate_score(findings: Iterable[Finding]) -> tuple[int, list[str]]:
     """
     Calculate the overall risk score and collect unique risk tags.
 
-    Scoring is applied once per unique risk category to avoid
-    double-counting multiple matches of the same threat type.
+    Per tag:
+        highest rule severity
+        + EXTRA_RULE_BONUS for each additional DISTINCT rule that fired
+          (capped at EXTRA_RULE_BONUS_CAP)
 
-    Args:
-        reasons: List of detector findings.
+    Repeating the same rule many times never raises the score; tags are
+    summed and the total is capped at 100.
 
     Returns:
-        Tuple containing:
-        - risk score (0-100)
-        - sorted list of unique risk tags
+        (risk score, sorted list of unique tags)
     """
 
-    tags = {reason.tag for reason in reasons}
+    per_tag: dict[str, dict[str, int]] = {}
+
+    for finding in findings:
+
+        rules = per_tag.setdefault(finding.tag, {})
+
+        rules[finding.rule_id] = max(
+            rules.get(finding.rule_id, 0),
+            finding.severity,
+        )
 
     score = 0
 
-    if "prompt_injection" in tags:
-        score += PROMPT_INJECTION_SCORE
+    for rules in per_tag.values():
 
-    if "rag_injection" in tags:
-        score += RAG_INJECTION_SCORE
+        severities = sorted(rules.values(), reverse=True)
 
-    if "pii" in tags:
-        score += PII_SCORE
+        bonus = min(
+            EXTRA_RULE_BONUS * (len(severities) - 1),
+            EXTRA_RULE_BONUS_CAP,
+        )
 
-    score = min(score, 100)
+        score += severities[0] + bonus
 
-    return score, sorted(tags)
+    return min(score, 100), sorted(per_tag)
