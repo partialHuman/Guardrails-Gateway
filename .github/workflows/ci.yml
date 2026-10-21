@@ -34,5 +34,6 @@ jobs:
           pip install -r requirements.api.txt
           pip install -r requirements.dev.txt
 
-      - name: Run test suite
-        run: python -m pytest -v
+      - name: Run test suite with coverage
+        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=95 -v
+
