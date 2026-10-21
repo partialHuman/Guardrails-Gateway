@@ -3,10 +3,15 @@ import requests
 import json
 import os
 
+# Accept both "http://api:8000" and "http://api:8000/analyze" so a
+# mis-set API_URL can never produce ".../analyze/analyze".
 BASE_URL = os.getenv(
     "API_URL",
     "http://localhost:8000"
-)
+).rstrip("/")
+
+if BASE_URL.endswith("/analyze"):
+    BASE_URL = BASE_URL[: -len("/analyze")]
 
 API_URL = f"{BASE_URL}/analyze"
 
@@ -93,6 +98,10 @@ st.divider()
 # --------------------------------------------------
 
 if st.button("Analyze", type="primary"):
+
+    if not prompt.strip():
+        st.warning("Enter a prompt first.")
+        st.stop()
 
     payload = {
 
@@ -185,6 +194,14 @@ if st.button("Analyze", type="primary"):
 
         st.subheader("Sanitized Context")
 
+        quarantined = result.get("quarantined_doc_ids", [])
+
+        if quarantined:
+            st.error(
+                "Quarantined (dropped) documents: "
+                + ", ".join(quarantined)
+            )
+
         for doc in result["sanitized_context_docs"]:
 
             st.markdown(f"**{doc['id']}**")
@@ -207,7 +224,10 @@ if st.button("Analyze", type="primary"):
             for reason in result["reasons"]:
 
                 st.write(
-                    f"• **{reason['tag']}** → {reason['evidence']}"
+                    f"• **{reason['tag']}** "
+                    f"(`{reason.get('rule', '')}` in "
+                    f"`{reason.get('source', 'prompt')}`) "
+                    f"→ {reason['evidence']}"
                 )
 
         else:

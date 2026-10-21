@@ -1,19 +1,9 @@
-from enum import Enum
 from typing import List
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
-# ==========================================================
-# ENUMS
-# ==========================================================
-
-class Decision(str, Enum):
-    """Possible policy decisions."""
-
-    ALLOW = "allow"
-    TRANSFORM = "transform"
-    BLOCK = "block"
+from app.config import MAX_CONTEXT_DOCS, MAX_DOC_CHARS, MAX_PROMPT_CHARS
+from app.core.findings import Decision  # noqa: F401  (re-exported)
 
 
 # ==========================================================
@@ -25,12 +15,14 @@ class ContextDocument(BaseModel):
 
     id: str = Field(
         ...,
+        min_length=1,
         description="Unique document identifier",
         examples=["doc-1"]
     )
 
     text: str = Field(
         ...,
+        max_length=MAX_DOC_CHARS,
         description="Retrieved document text"
     )
 
@@ -79,15 +71,26 @@ class AnalyzeRequest(BaseModel):
     prompt: str = Field(
         ...,
         min_length=1,
+        max_length=MAX_PROMPT_CHARS,
         description="User prompt"
     )
 
     context_docs: List[ContextDocument] = Field(
         default_factory=list,
-        description="Optional retrieved documents"
+        max_length=MAX_CONTEXT_DOCS,
+        description="Optional retrieved documents (ids must be unique)"
     )
 
     metadata: Metadata
+
+    @model_validator(mode="after")
+    def unique_doc_ids(self):
+        ids = [doc.id for doc in self.context_docs]
+
+        if len(ids) != len(set(ids)):
+            raise ValueError("context_docs ids must be unique")
+
+        return self
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -123,7 +126,19 @@ class Reason(BaseModel):
 
     evidence: str = Field(
         ...,
-        examples=["Matched phrase: ignore previous instructions"]
+        examples=["Matched phrase: 'ignore previous instructions'"]
+    )
+
+    source: str = Field(
+        "prompt",
+        description="'prompt' or the id of the context document",
+        examples=["prompt", "doc-1"]
+    )
+
+    rule: str = Field(
+        "",
+        description="Id of the rule that fired (see GET /policy)",
+        examples=["override_instructions"]
     )
 
 
@@ -143,7 +158,15 @@ class AnalyzeResponse(BaseModel):
 
     sanitized_prompt: str
 
-    sanitized_context_docs: List[ContextDocument]
+    sanitized_context_docs: List[ContextDocument] = Field(
+        ...,
+        description="Context documents after redaction. Quarantined documents are NOT included."
+    )
+
+    quarantined_doc_ids: List[str] = Field(
+        default_factory=list,
+        description="Documents dropped because they contained an injection"
+    )
 
     reasons: List[Reason]
 
@@ -153,24 +176,29 @@ class AnalyzeResponse(BaseModel):
                 "decision": "transform",
                 "risk_score": 65,
                 "risk_tags": [
-                    "prompt_injection",
-                    "pii"
+                    "pii",
+                    "prompt_injection"
                 ],
-                "sanitized_prompt": "Contact me at [REDACTED_EMAIL]",
+                "sanitized_prompt": "[REMOVED_PROMPT_INJECTION], mail [REDACTED_EMAIL]",
                 "sanitized_context_docs": [
                     {
                         "id": "doc-1",
                         "text": "Company handbook."
                     }
                 ],
+                "quarantined_doc_ids": [],
                 "reasons": [
                     {
                         "tag": "prompt_injection",
-                        "evidence": "Matched phrase: ignore previous instructions"
+                        "evidence": "Matched phrase: 'Ignore previous instructions'",
+                        "source": "prompt",
+                        "rule": "override_instructions"
                     },
                     {
                         "tag": "pii",
-                        "evidence": "Email detected"
+                        "evidence": "Email address detected",
+                        "source": "prompt",
+                        "rule": "email"
                     }
                 ]
             }
