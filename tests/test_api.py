@@ -331,3 +331,77 @@ def test_analysis_logs_exclude_user_and_document_identifiers(caplog):
     assert payload["quarantined_document_count"] == 1
     assert "user_id" not in payload
     assert "quarantined_doc_ids" not in payload
+
+def test_empty_request_id_is_rejected():
+    metadata = {**META, "request_id": ""}
+
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "Hello",
+            "context_docs": [],
+            "metadata": metadata,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_whitespace_only_request_id_is_rejected():
+    metadata = {**META, "request_id": "   "}
+
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "Hello",
+            "context_docs": [],
+            "metadata": metadata,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_oversized_request_id_is_rejected():
+    metadata = {**META, "request_id": "r" * 129}
+
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "Hello",
+            "context_docs": [],
+            "metadata": metadata,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_request_id_with_newline_is_rejected():
+    metadata = {**META, "request_id": "req-001\nforged-log-entry"}
+
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "Hello",
+            "context_docs": [],
+            "metadata": metadata,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_valid_request_id_is_preserved():
+    request_id = "req-2026-001"
+
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "Hello",
+            "context_docs": [],
+            "metadata": {**META, "request_id": request_id},
+        },
+    )
+
+    assert response.status_code == 200
