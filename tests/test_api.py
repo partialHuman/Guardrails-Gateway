@@ -234,3 +234,52 @@ def test_unexpected_analyze_error_does_not_return_internal_details():
     assert response.status_code == 500
     assert "internal secret marker" not in response.text.lower()
     assert "traceback" not in response.text.lower()
+
+
+def test_unexpected_analyze_error_returns_generic_response():
+    from unittest.mock import patch
+
+    with patch(
+        "app.main.analyze_request",
+        side_effect=RuntimeError("sensitive internal message"),
+    ):
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            response = test_client.post(
+                "/analyze",
+                json={
+                    "prompt": "Hello",
+                    "context_docs": [],
+                    "metadata": META,
+                },
+            )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal Server Error"}
+    assert "sensitive internal message" not in response.text
+
+
+def test_unexpected_error_is_logged_without_exception_message(caplog):
+    from unittest.mock import patch
+
+    with caplog.at_level("ERROR", logger="sentraguard"):
+        with patch(
+            "app.main.analyze_request",
+            side_effect=RuntimeError("sensitive internal message"),
+        ):
+            with TestClient(
+                app,
+                raise_server_exceptions=False,
+            ) as test_client:
+                response = test_client.post(
+                    "/analyze",
+                    json={
+                        "prompt": "Hello",
+                        "context_docs": [],
+                        "metadata": META,
+                    },
+                )
+
+    assert response.status_code == 500
+    assert "Unhandled exception" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "sensitive internal message" not in caplog.text

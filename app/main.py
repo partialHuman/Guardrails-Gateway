@@ -1,7 +1,12 @@
-from fastapi import FastAPI
+
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.config import API_DESCRIPTION, API_TITLE, API_VERSION
 from app.core.analyzer import analyze_request
+from app.core.logger import logger
 from app.core.policy import POLICY
 from app.schemas import AnalyzeRequest, AnalyzeResponse
 
@@ -10,6 +15,25 @@ app = FastAPI(
     version=API_VERSION,
     description=API_DESCRIPTION,
 )
+
+
+@app.exception_handler(Exception)
+async def unexpected_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    """Return a safe response for unexpected server errors."""
+    logger.error(
+        "Unhandled exception | method=%s | path=%s | exception_type=%s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+    )
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+    )
 
 
 @app.get("/policy")
