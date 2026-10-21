@@ -197,20 +197,22 @@ def analyze_request(request: AnalyzeRequest) -> AnalyzeResponse:
     # Logging (metadata only - never prompt or document text)
     # -----------------------------------------------------
 
+
     logger.info(
         json.dumps(
             {
+                "event": "analysis_completed",
                 "request_id": request.metadata.request_id,
                 "app_id": request.metadata.app_id,
-                "user_id": request.metadata.user_id,
                 "decision": result.decision.value,
                 "risk_score": result.risk_score,
                 "risk_tags": result.risk_tags,
                 "rules": sorted({f.rule_id for f in result.findings}),
-                "quarantined_doc_ids": result.quarantined_doc_ids,
+                "quarantined_document_count": len(result.quarantined_doc_ids),
             }
         )
     )
+
 
     # -----------------------------------------------------
     # Response
