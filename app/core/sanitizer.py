@@ -1,59 +1,84 @@
 """
 Sanitization utilities for SentraGuard Lite.
+
+Redaction is span based: detectors report where a match is, the
+sanitizer replaces exactly those spans in the canonical text.
 """
 
 from __future__ import annotations
 
-import re
+from typing import Iterable
 
-from app.core.policy import (
-    PROMPT_INJECTION_PATTERNS,
-    RAG_INJECTION_PATTERNS,
+from app.core.detectors import (
+    detect_pii,
+    detect_prompt_injection,
+    detect_rag_injection,
 )
-from app.utils.regex import EMAIL_REGEX, PHONE_REGEX
+from app.core.findings import Finding
+from app.utils.text import canonicalize
 
-# Compile regex patterns
-EMAIL_PATTERN = re.compile(EMAIL_REGEX, re.IGNORECASE)
-PHONE_PATTERN = re.compile(PHONE_REGEX)
+
+def apply_findings(text: str, findings: Iterable[Finding]) -> str:
+    """
+    Replace the span of every given finding with its replacement text.
+
+    Overlapping spans are merged (the earliest finding's replacement
+    wins). If there is nothing to replace, the original text is returned
+    untouched.
+    """
+
+    spans = [(f.start, f.end, f.replacement) for f in findings]
+
+    if not spans:
+        return text
+
+    canonical = canonicalize(text)
+
+    merged: list[list] = []
+
+    for start, end, replacement in sorted(spans, key=lambda s: (s[0], -s[1])):
+
+        if merged and start < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+            continue
+
+        merged.append([start, end, replacement])
+
+    pieces: list[str] = []
+
+    position = 0
+
+    for start, end, replacement in merged:
+        pieces.append(canonical[position:start])
+        pieces.append(replacement)
+        position = end
+
+    pieces.append(canonical[position:])
+
+    return "".join(pieces).strip()
 
 
 def sanitize_prompt(text: str) -> str:
     """
     Sanitize a user prompt by:
-    - Redacting emails
-    - Redacting phone numbers
+    - Redacting PII (emails, phones, cards, Aadhaar)
     - Removing prompt injection phrases
     """
 
-    sanitized = text
-
-    # Redact email addresses
-    sanitized = EMAIL_PATTERN.sub(
-        "[REDACTED_EMAIL]",
-        sanitized
+    return apply_findings(
+        text,
+        detect_prompt_injection(text) + detect_pii(text),
     )
-
-    # Redact phone numbers
-    sanitized = PHONE_PATTERN.sub(
-        "[REDACTED_PHONE]",
-        sanitized
-    )
-
-    # Remove prompt injection phrases
-    for phrase in PROMPT_INJECTION_PATTERNS + RAG_INJECTION_PATTERNS:
-        sanitized = re.sub(
-            re.escape(phrase),
-            "[REMOVED_PROMPT_INJECTION]",
-            sanitized,
-            flags=re.IGNORECASE,
-        )
-
-    return sanitized.strip()
 
 
 def sanitize_document(text: str) -> str:
     """
-    Sanitize a retrieved context document.
+    Sanitize a retrieved context document by redacting PII and every
+    injection phrase. (The analyzer quarantines high-severity documents
+    instead of cleaning them; this is the "clean it anyway" helper.)
     """
 
-    return sanitize_prompt(text)
+    return apply_findings(
+        text,
+        detect_rag_injection(text) + detect_pii(text),
+    )
