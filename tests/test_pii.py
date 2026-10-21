@@ -129,3 +129,25 @@ def test_hostile_inputs_are_scanned_in_linear_time(name):
     detect_prompt_injection(text)
 
     assert time.perf_counter() - started < 2.0
+
+def test_multiple_pii_values_are_redacted_without_losing_context():
+    text = "Email john@gmail.com or call +91 9876543210 for help."
+
+    result = redact(text)
+
+    assert result == (
+        "Email [REDACTED_EMAIL] or call [REDACTED_PHONE] for help."
+    )
+    assert "john@gmail.com" not in result
+    assert "9876543210" not in result
+
+
+def test_invalid_card_does_not_hide_nearby_email():
+    text = "Contact john@gmail.com; invalid card 4111 1111 1111 1112"
+
+    findings = detect_pii(text)
+
+    assert [finding.rule_id for finding in findings] == ["email"]
+    assert redact(text) == (
+        "Contact [REDACTED_EMAIL]; invalid card 4111 1111 1111 1112"
+    )
