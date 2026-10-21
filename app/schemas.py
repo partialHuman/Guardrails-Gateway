@@ -1,7 +1,7 @@
 from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.config import MAX_CONTEXT_DOCS, MAX_DOC_CHARS, MAX_PROMPT_CHARS
 from app.core.findings import Decision  # noqa: F401  (re-exported)
 
@@ -49,10 +49,25 @@ class Metadata(BaseModel):
         examples=["user-123"]
     )
 
+
     request_id: str = Field(
         ...,
-        examples=["req-001"]
+        min_length=1,
+        max_length=128,
+        examples=["req-001"],
     )
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("request_id must not be empty or whitespace-only")
+
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("request_id must not contain control characters")
+
+        return value
+
 
     model_config = ConfigDict(
         json_schema_extra={
