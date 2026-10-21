@@ -331,6 +331,11 @@ def test_analysis_logs_exclude_user_and_document_identifiers(caplog):
     assert payload["quarantined_document_count"] == 1
     assert "user_id" not in payload
     assert "quarantined_doc_ids" not in payload
+    assert "duration_ms" in payload
+    assert isinstance(payload["duration_ms"], (int, float))
+    assert payload["duration_ms"] >= 0
+    assert doc_marker not in json.dumps(payload)
+    assert user_marker not in json.dumps(payload)
 
 def test_empty_request_id_is_rejected():
     metadata = {**META, "request_id": ""}

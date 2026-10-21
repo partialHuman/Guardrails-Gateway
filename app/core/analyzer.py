@@ -8,6 +8,7 @@ Core analysis engine for SentraGuard Lite.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -183,15 +184,20 @@ def build_reasons(findings: Sequence[Finding]) -> list[Reason]:
     return reasons
 
 
+
 def analyze_request(request: AnalyzeRequest) -> AnalyzeResponse:
     """
     Analyze an incoming API request.
     """
 
+    start_time = time.perf_counter()
+
     result = evaluate(
         request.prompt,
         [(doc.id, doc.text) for doc in request.context_docs],
     )
+
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 3)
 
     # -----------------------------------------------------
     # Logging (metadata only - never prompt or document text)
@@ -209,6 +215,7 @@ def analyze_request(request: AnalyzeRequest) -> AnalyzeResponse:
                 "risk_tags": result.risk_tags,
                 "rules": sorted({f.rule_id for f in result.findings}),
                 "quarantined_document_count": len(result.quarantined_doc_ids),
+                "duration_ms": duration_ms,
             }
         )
     )
