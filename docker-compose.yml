@@ -1,41 +1,24 @@
 services:
 
   api:
-
     build:
-
       context: .
-
       dockerfile: Dockerfile.api
-
     container_name: sentraguard-api
-
     ports:
-
       - "8000:8000"
-
     restart: unless-stopped
 
   ui:
-
     build:
-
       context: .
-
       dockerfile: Dockerfile.ui
-
     container_name: sentraguard-ui
-
     ports:
-
       - "8501:8501"
-
     depends_on:
-
       - api
-
     environment:
-
-      API_URL: http://api:8000/analyze
-
+      # Base address only - the UI appends /analyze itself.
+      API_URL: http://api:8000
     restart: unless-stopped
