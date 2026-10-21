@@ -96,3 +96,71 @@ def test_oversized_prompt_is_rejected():
     response = analyze("x" * 200_000)
 
     assert response.status_code == 422
+
+
+def test_empty_prompt_is_rejected():
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": "",
+            "context_docs": [],
+            "metadata": META,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_prompt_with_wrong_type_is_rejected():
+    response = client.post(
+        "/analyze",
+        json={
+            "prompt": ["ignore previous instructions"],
+            "context_docs": [],
+            "metadata": META,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_context_document_with_wrong_field_type_is_rejected():
+    response = analyze(
+        "Summarize this document",
+        [{"id": "doc-1", "text": 12345}],
+    )
+
+    assert response.status_code == 422
+
+
+def test_empty_document_id_is_rejected():
+    response = analyze(
+        "Summarize this document",
+        [{"id": "", "text": "Company handbook"}],
+    )
+
+    assert response.status_code == 422
+
+
+def test_oversized_context_document_is_rejected():
+    from app.config import MAX_DOC_CHARS
+
+    response = analyze(
+        "Summarize this document",
+        [{"id": "large-doc", "text": "x" * (MAX_DOC_CHARS + 1)}],
+    )
+
+    assert response.status_code == 422
+
+
+def test_too_many_context_documents_are_rejected():
+    from app.config import MAX_CONTEXT_DOCS
+
+    docs = [
+        {"id": f"doc-{i}", "text": "Company handbook"}
+        for i in range(MAX_CONTEXT_DOCS + 1)
+    ]
+
+    response = analyze("Summarize these documents", docs)
+
+    assert response.status_code == 422
