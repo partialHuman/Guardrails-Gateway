@@ -264,6 +264,12 @@ docker compose down
 
 # API Endpoints
 
+## GET /health
+
+Returns `{"status": "ok"}`. Public endpoint for container orchestrators (Kubernetes, Docker) and load balancer health checks.
+
+---
+
 ## GET /policy
 
 Returns
@@ -359,6 +365,40 @@ still redacted.
 ---
 
 
+# Authentication
+
+SentraGuard Lite supports configurable API-key authentication for protected endpoints.
+
+### Deployment Models
+
+- **Local Development / Testing (Default)**:
+  When `GUARDRAILS_API_KEY` is not set and `GUARDRAILS_REQUIRE_AUTH=false`, authentication is disabled. Local development, test suites, the CLI, and the Streamlit UI work out-of-the-box with zero configuration friction.
+- **Production Deployment**:
+  Set `GUARDRAILS_REQUIRE_AUTH=true` and configure a secret via `GUARDRAILS_API_KEY`. The gateway validates that credentials are configured at startup and fails safe (refuses requests with HTTP 500) if the key is missing or empty, ensuring it never runs unauthenticated in production.
+
+### Credential Delivery
+
+Clients may authenticate using either header:
+- `X-API-Key: <your-api-key>`
+- `Authorization: Bearer <your-api-key>`
+
+Query parameters are intentionally rejected to prevent credential leakage in proxy and browser logs.
+
+### Protected vs Public Endpoints
+
+- **Public**: `/health` (orchestration probes), `/docs`, `/redoc`, and `/openapi.json` (OpenAPI documentation).
+- **Protected (Default-Deny)**: `/analyze`, `/policy`, and all other endpoints require authentication when enabled. Unknown routes return 401 when unauthenticated to prevent route-enumeration probing.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GUARDRAILS_API_KEY` | `""` | Secret API key for authentication. |
+| `GUARDRAILS_REQUIRE_AUTH` | `false` | When `true`, enforces authentication and fails safe if `GUARDRAILS_API_KEY` is unset. |
+| `GUARDRAILS_PUBLIC_PATHS` | `""` | Optional comma-separated override of public endpoints (defaults to `/health,/docs,/redoc,/openapi.json`). |
+
+---
+
 # Running Tests
 
 ```bash
@@ -440,8 +480,8 @@ This is a fast, deterministic **first layer**, not a complete defence.
   emoji joiners. Clean text is returned byte-for-byte unchanged.
 - Quarantine can drop a legitimate document that happens to say
   "ignore the rules" (for example a game rulebook).
-- There is no authentication or rate limiting yet: do not expose the API to
-  the internet as-is.
+- Without authentication enabled, do not expose the API to untrusted networks:
+  set `GUARDRAILS_REQUIRE_AUTH=true` and `GUARDRAILS_API_KEY` in production.
 
 ---
 

@@ -8,6 +8,9 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+    environment:
+      - GUARDRAILS_API_KEY=${GUARDRAILS_API_KEY:-}
+      - GUARDRAILS_REQUIRE_AUTH=${GUARDRAILS_REQUIRE_AUTH:-false}
 
   ui:
     build:
@@ -21,4 +24,5 @@ services:
     environment:
       # Base address only - the UI appends /analyze itself.
       API_URL: http://api:8000
+      GUARDRAILS_API_KEY: ${GUARDRAILS_API_KEY:-}
     restart: unless-stopped
