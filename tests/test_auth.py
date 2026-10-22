@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
-from unittest.mock import patch
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -502,13 +503,35 @@ class TestPathHelpersAndConfig:
 
 
 class TestCliAuthentication:
-    """Test CLI parameter support for API keys."""
+    """Test CLI parameter support for API keys without requiring requests installed."""
 
-    def test_cli_sends_api_key_header(self, monkeypatch):
-        import cli
+    @pytest.fixture
+    def mock_requests(self, monkeypatch):
+        """Provide a mock requests module so CLI tests run in headless/minimal CI environments."""
+        class MockConnectionError(Exception):
+            pass
 
-        mock_post = patch("requests.post").start()
-        mock_response = patch("requests.Response").start()
+        class MockHTTPError(Exception):
+            def __init__(self, *args, response=None, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.response = response
+
+        fake_requests = MagicMock()
+        fake_exceptions = MagicMock()
+        fake_exceptions.ConnectionError = MockConnectionError
+        fake_exceptions.HTTPError = MockHTTPError
+        fake_requests.exceptions = fake_exceptions
+
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+        monkeypatch.setitem(sys.modules, "requests.exceptions", fake_exceptions)
+
+        if "cli" in sys.modules:
+            monkeypatch.delitem(sys.modules, "cli")
+
+        return fake_requests
+
+    def test_cli_sends_api_key_header(self, monkeypatch, mock_requests):
+        mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
             "decision": "allow",
@@ -520,18 +543,67 @@ class TestCliAuthentication:
             "reasons": [],
         }
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        mock_requests.post.return_value = mock_response
 
-        try:
-            monkeypatch.setattr(
-                "sys.argv",
-                ["cli.py", "--prompt", "Hello", "--api-key", DUMMY_SECRET],
-            )
+        import cli
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["cli.py", "--prompt", "Hello", "--api-key", DUMMY_SECRET],
+        )
+        cli.main()
+
+        assert mock_requests.post.called
+        _, kwargs = mock_requests.post.call_args
+        assert "headers" in kwargs
+        assert kwargs["headers"].get("X-API-Key") == DUMMY_SECRET
+
+    def test_cli_uses_api_key_from_env(self, monkeypatch, mock_requests):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "decision": "allow",
+            "risk_score": 0,
+            "risk_tags": [],
+            "sanitized_prompt": "test prompt",
+            "sanitized_context_docs": [],
+            "quarantined_doc_ids": [],
+            "reasons": [],
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_requests.post.return_value = mock_response
+
+        monkeypatch.setenv("GUARDRAILS_API_KEY", DUMMY_SECRET)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["cli.py", "--prompt", "Hello"],
+        )
+
+        import cli
+
+        cli.main()
+
+        assert mock_requests.post.called
+        _, kwargs = mock_requests.post.call_args
+        assert kwargs["headers"].get("X-API-Key") == DUMMY_SECRET
+
+    def test_cli_handles_401_unauthorized(self, monkeypatch, mock_requests, capsys):
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_requests.post.return_value = mock_response
+        mock_response.raise_for_status.side_effect = mock_requests.exceptions.HTTPError(
+            "401 Client Error: Unauthorized", response=mock_response
+        )
+
+        import cli
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["cli.py", "--prompt", "Hello", "--api-key", "wrong-key"],
+        )
+        with pytest.raises(SystemExit) as excinfo:
             cli.main()
 
-            assert mock_post.called
-            _, kwargs = mock_post.call_args
-            assert "headers" in kwargs
-            assert kwargs["headers"].get("X-API-Key") == DUMMY_SECRET
-        finally:
-            patch.stopall()
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Authentication failed (401 Unauthorized)" in captured.out
