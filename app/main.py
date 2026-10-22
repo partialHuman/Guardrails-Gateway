@@ -5,6 +5,7 @@ from app.config import (
     API_DESCRIPTION,
     API_TITLE,
     API_VERSION,
+    MAX_REQUEST_BODY_BYTES,
     RATE_LIMIT_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
 )
@@ -24,6 +25,72 @@ rate_limiter = InMemoryRateLimiter(
     max_requests=RATE_LIMIT_REQUESTS,
     window_seconds=RATE_LIMIT_WINDOW_SECONDS,
 )
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
+def _reject(status_code: int, detail: str) -> JSONResponse:
+    """Return a JSONResponse with security headers pre-applied."""
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": detail},
+        headers=_SECURITY_HEADERS,
+    )
+
+
+@app.middleware("http")
+async def enforce_request_body_size(request: Request, call_next):
+    """Reject requests whose body exceeds MAX_REQUEST_BODY_BYTES.
+
+    Two independent checks are applied so that neither alone can be bypassed:
+
+    1. Content-Length header – fast rejection before any body bytes are read.
+       Malformed or negative values are also rejected.
+    2. Streaming byte-count cap – enforced while reading the body regardless
+       of what Content-Length declared, preventing unbounded memory use from
+       chunked or lying Content-Length requests.
+
+    After a successful bounded read the body is cached on the Request object
+    (``request._body``) so that downstream middleware and route handlers can
+    call ``await request.body()`` or ``await request.json()`` normally.
+    """
+    # --- Check 1: Content-Length header (fast path; not trusted alone) ---
+    content_length_header = request.headers.get("content-length")
+    if content_length_header is not None:
+        try:
+            declared_length = int(content_length_header)
+        except ValueError:
+            return _reject(400, "Malformed Content-Length header")
+
+        if declared_length < 0:
+            return _reject(400, "Malformed Content-Length header")
+
+        if declared_length > MAX_REQUEST_BODY_BYTES:
+            return _reject(413, "Request body too large")
+
+    # --- Check 2: Streaming cap (enforced regardless of Content-Length) ---
+    # Accumulate chunks up to the limit + 1 byte so we can detect overflow
+    # without buffering the entire oversized body.
+    body_chunks: list[bytes] = []
+    total_bytes = 0
+
+    async for chunk in request.stream():
+        total_bytes += len(chunk)
+        if total_bytes > MAX_REQUEST_BODY_BYTES:
+            return _reject(413, "Request body too large")
+        body_chunks.append(chunk)
+
+    # Cache the validated body so downstream reads (request.body() /
+    # request.json()) work normally. Starlette's stream() yields _body
+    # directly when this attribute is set, so no double-read occurs.
+    request._body = b"".join(body_chunks)  # type: ignore[attr-defined]
+
+    return await call_next(request)
 
 
 @app.middleware("http")
