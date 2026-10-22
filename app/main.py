@@ -1,8 +1,10 @@
 import math
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import app.config as config
 from app.config import (
     API_DESCRIPTION,
     API_TITLE,
@@ -16,6 +18,14 @@ from app.config import (
     TRUSTED_PROXIES,
 )
 from app.core.analyzer import analyze_request
+from app.core.auth import (
+    auth_misconfigured_response,
+    auth_unauthorized_response,
+    extract_api_key,
+    is_public_path,
+    validate_auth_config,
+    verify_api_key,
+)
 from app.core.logger import logger
 from app.core.policy import POLICY
 from app.core.rate_limiter import (
@@ -25,10 +35,19 @@ from app.core.rate_limiter import (
 )
 from app.schemas import AnalyzeRequest, AnalyzeResponse
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Validate configuration on application startup."""
+    validate_auth_config(config.REQUIRE_AUTH, config.API_KEY)
+    yield
+
+
 app = FastAPI(
     title=API_TITLE,
     version=API_VERSION,
     description=API_DESCRIPTION,
+    lifespan=lifespan,
 )
 
 rate_limiter: RateLimiterBackend = create_rate_limiter(
@@ -107,6 +126,44 @@ async def enforce_request_body_size(request: Request, call_next):
 
 
 @app.middleware("http")
+async def enforce_authentication(request: Request, call_next):
+    """Enforce API-key authentication for protected endpoints.
+
+    Public paths (health checks and documentation) are exempt.
+    All other routes are protected by default (default-deny).
+    """
+    # 1. Exempt public paths (e.g. /health, /docs, /redoc, /openapi.json)
+    if is_public_path(request.url.path, config.PUBLIC_PATHS):
+        return await call_next(request)
+
+    # 2. Fail-safe: if authentication is required but misconfigured, fail closed
+    if config.REQUIRE_AUTH and not config.API_KEY:
+        logger.error(
+            "Authentication required but no API key configured | method=%s | path=%s",
+            request.method,
+            request.url.path,
+        )
+        return auth_misconfigured_response()
+
+    # 3. If authentication is not enabled (local development), allow request
+    auth_enabled = config.REQUIRE_AUTH or bool(config.API_KEY)
+    if not auth_enabled:
+        return await call_next(request)
+
+    # 4. Verify credentials
+    provided_key = extract_api_key(request)
+    if not verify_api_key(provided_key, config.API_KEY):
+        logger.warning(
+            "Authentication failed | method=%s | path=%s",
+            request.method,
+            request.url.path,
+        )
+        return auth_unauthorized_response()
+
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def enforce_rate_limit(request: Request, call_next):
     """Limit requests per client IP address."""
     client = request.client
@@ -155,6 +212,12 @@ async def unexpected_exception_handler(
         status_code=500,
         content={"detail": "Internal Server Error"},
     )
+
+
+@app.get("/health")
+def health():
+    """Health check endpoint for container orchestrators."""
+    return {"status": "ok"}
 
 
 @app.get("/policy")

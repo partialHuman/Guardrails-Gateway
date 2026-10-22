@@ -14,6 +14,7 @@ if BASE_URL.endswith("/analyze"):
     BASE_URL = BASE_URL[: -len("/analyze")]
 
 API_URL = f"{BASE_URL}/analyze"
+API_KEY = os.getenv("GUARDRAILS_API_KEY", os.getenv("API_KEY", ""))
 
 st.set_page_config(
     page_title="SentraGuard Lite",
@@ -121,11 +122,16 @@ if st.button("Analyze", type="primary"):
 
     }
 
+    headers = {}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+
     try:
 
         response = requests.post(
             API_URL,
             json=payload,
+            headers=headers,
             timeout=30
         )
 
@@ -251,6 +257,12 @@ if st.button("Analyze", type="primary"):
             "Start the backend using:\n"
             "uvicorn app.main:app --reload"
         )
+
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 401:
+            st.error("Authentication failed (401 Unauthorized). Check your GUARDRAILS_API_KEY.")
+        else:
+            st.exception(exc)
 
     except Exception as e:
 

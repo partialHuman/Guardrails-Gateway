@@ -84,3 +84,28 @@ _raw_trusted = os.getenv("GUARDRAILS_TRUSTED_PROXIES", "")
 TRUSTED_PROXIES: frozenset[str] = frozenset(
     addr.strip() for addr in _raw_trusted.split(",") if addr.strip()
 )
+
+# API authentication.
+# Secret API key for authenticating incoming requests.
+# In local development, leaving this empty allows unauthenticated access.
+API_KEY: str = os.getenv("GUARDRAILS_API_KEY", "").strip()
+
+# Whether authentication is mandatory (recommended in production).
+# If True and API_KEY is empty, the gateway fails safe on startup and
+# rejects protected requests with HTTP 500 rather than running unauthenticated.
+REQUIRE_AUTH: bool = os.getenv(
+    "GUARDRAILS_REQUIRE_AUTH", "false"
+).lower() in ("true", "1", "yes")
+
+# Explicit public endpoint override (comma-separated paths).
+# When empty (default), /health, /docs, /redoc, and /openapi.json are public.
+_raw_public_paths = os.getenv("GUARDRAILS_PUBLIC_PATHS", "")
+PUBLIC_PATHS: frozenset[str] | None = (
+    frozenset(
+        p.strip().rstrip("/") or "/"
+        for p in _raw_public_paths.split(",")
+        if p.strip()
+    )
+    if _raw_public_paths.strip()
+    else None
+)
