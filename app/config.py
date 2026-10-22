@@ -36,11 +36,11 @@ def _int_env(name: str, default: int) -> int:
 
 
 # Input limits (protect the regex engine from huge payloads).
-MAX_PROMPT_CHARS = _int_env("GUARDRAILS_MAX_PROMPT_CHARS", 20_000)
+MAX_PROMPT_CHARS = max(1, _int_env("GUARDRAILS_MAX_PROMPT_CHARS", 20_000))
 
-MAX_CONTEXT_DOCS = _int_env("GUARDRAILS_MAX_CONTEXT_DOCS", 20)
+MAX_CONTEXT_DOCS = max(1, _int_env("GUARDRAILS_MAX_CONTEXT_DOCS", 20))
 
-MAX_DOC_CHARS = _int_env("GUARDRAILS_MAX_DOC_CHARS", 50_000)
+MAX_DOC_CHARS = max(1, _int_env("GUARDRAILS_MAX_DOC_CHARS", 50_000))
 
 # Maximum raw HTTP request-body size in bytes.
 # Requests exceeding this limit are rejected with HTTP 413 before the body is
