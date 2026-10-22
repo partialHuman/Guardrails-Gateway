@@ -6,17 +6,28 @@ from app.core.rate_limiter import InMemoryRateLimiter
 def test_allows_requests_until_limit():
     limiter = InMemoryRateLimiter(max_requests=2, window_seconds=60)
 
-    assert limiter.allow("client-a") is True
-    assert limiter.allow("client-a") is True
-    assert limiter.allow("client-a") is False
+    allowed_1, retry_1 = limiter.allow("client-a")
+    allowed_2, retry_2 = limiter.allow("client-a")
+    allowed_3, retry_3 = limiter.allow("client-a")
+
+    assert allowed_1 is True
+    assert retry_1 == 0.0
+    assert allowed_2 is True
+    assert retry_2 == 0.0
+    assert allowed_3 is False
+    assert retry_3 > 0
 
 
 def test_clients_have_independent_limits():
     limiter = InMemoryRateLimiter(max_requests=1, window_seconds=60)
 
-    assert limiter.allow("client-a") is True
-    assert limiter.allow("client-b") is True
-    assert limiter.allow("client-a") is False
+    allowed_a, _ = limiter.allow("client-a")
+    allowed_b, _ = limiter.allow("client-b")
+    denied_a, _ = limiter.allow("client-a")
+
+    assert allowed_a is True
+    assert allowed_b is True
+    assert denied_a is False
 
 
 def test_request_is_allowed_after_window_expires():
@@ -27,12 +38,17 @@ def test_request_is_allowed_after_window_expires():
         clock=lambda: now[0],
     )
 
-    assert limiter.allow("client-a") is True
-    assert limiter.allow("client-a") is False
+    allowed_1, _ = limiter.allow("client-a")
+    denied, _ = limiter.allow("client-a")
 
-    now[0] = 110.0
+    assert allowed_1 is True
+    assert denied is False
 
-    assert limiter.allow("client-a") is True
+    now[0] = 110.1
+    allowed_again, retry = limiter.allow("client-a")
+
+    assert allowed_again is True
+    assert retry == 0.0
 
 
 @pytest.mark.parametrize(

@@ -52,7 +52,7 @@ MAX_REQUEST_BODY_BYTES = max(
     _int_env("GUARDRAILS_MAX_REQUEST_BODY_BYTES", 1_048_576),  # 1 MiB
 )
 
-# API rate limiting (per client, per process).
+# API rate limiting (per client).
 RATE_LIMIT_REQUESTS = max(
     1,
     _int_env("GUARDRAILS_RATE_LIMIT_REQUESTS", 60),
@@ -61,4 +61,26 @@ RATE_LIMIT_REQUESTS = max(
 RATE_LIMIT_WINDOW_SECONDS = max(
     1,
     _int_env("GUARDRAILS_RATE_LIMIT_WINDOW_SECONDS", 60),
+)
+
+# API rate limiting backend ("memory" or "redis").
+RATE_LIMIT_BACKEND = os.getenv("GUARDRAILS_RATE_LIMIT_BACKEND", "memory")
+
+# Optional Redis connection URL for distributed rate limiting.
+RATE_LIMIT_REDIS_URL = os.getenv("GUARDRAILS_RATE_LIMIT_REDIS_URL", "")
+
+# Shared backend failure mode:
+# If False (default), fail open (allow requests) when Redis is unreachable.
+# If True, fail closed (deny requests) when Redis is unreachable.
+RATE_LIMIT_FAIL_CLOSED = os.getenv(
+    "GUARDRAILS_RATE_LIMIT_FAIL_CLOSED", "false"
+).lower() in ("true", "1", "yes")
+
+# Trusted reverse-proxy addresses for X-Forwarded-For extraction.
+# Comma-separated list of IP addresses (e.g. "10.0.0.1,10.0.0.2").
+# When empty (default), X-Forwarded-For is NEVER trusted and the TCP
+# peer address (request.client.host) is always used for rate limiting.
+_raw_trusted = os.getenv("GUARDRAILS_TRUSTED_PROXIES", "")
+TRUSTED_PROXIES: frozenset[str] = frozenset(
+    addr.strip() for addr in _raw_trusted.split(",") if addr.strip()
 )
