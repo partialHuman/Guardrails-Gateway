@@ -211,6 +211,7 @@ async def unexpected_exception_handler(
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal Server Error"},
+        headers=_SECURITY_HEADERS,
     )
 
 

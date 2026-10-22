@@ -5,6 +5,8 @@ __pycache__
 *.pyc
 .pytest_cache
 .env
+.coverage
+*.log
 tests
 docs
 *.md

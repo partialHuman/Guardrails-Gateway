@@ -5,12 +5,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Run as unprivileged non-root user for container security
+RUN groupadd -g 10001 appuser && \
+    useradd -u 10001 -g appuser -s /sbin/nologin -M appuser
+
 COPY requirements.ui.txt .
 
 RUN pip install --no-cache-dir -r requirements.ui.txt
 
 COPY ui ./ui
 
+RUN chown -R appuser:appuser /app
+
+USER appuser
+
 EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health').status == 200 else 1)"
 
 CMD ["streamlit", "run", "ui/streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]

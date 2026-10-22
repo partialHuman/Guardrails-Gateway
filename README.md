@@ -262,6 +262,34 @@ docker compose down
 ---
 
 
+## Production Deployment & Environment Variables
+
+### Security Hardening in Containers
+- **Non-Root Execution**: Both `Dockerfile.api` and `Dockerfile.ui` run as unprivileged user `appuser` (`UID:GID 10001`), conforming to CIS Docker Benchmarks and least-privilege standards.
+- **Orchestration Healthchecks**: Dockerfiles define native Python `HEALTHCHECK` instructions that verify HTTP `/health` without external `curl` or `wget` dependencies.
+- **Orchestrated Startup**: `docker-compose.yml` ensures the UI container waits until the API container is verified `service_healthy`.
+
+### Configuration Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `GUARDRAILS_API_KEY` | `""` | Secret API key for authentication (`X-API-Key` or `Authorization: Bearer <key>`). |
+| `GUARDRAILS_REQUIRE_AUTH` | `false` | When `true`, mandates authentication; fails closed on startup if key is missing. |
+| `GUARDRAILS_PUBLIC_PATHS` | `/health,/docs,/redoc,/openapi.json` | Comma-separated paths exempted from authentication. |
+| `GUARDRAILS_RATE_LIMIT_REQUESTS` | `60` | Maximum requests allowed per client IP within the rate-limit window. |
+| `GUARDRAILS_RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window duration in seconds. |
+| `GUARDRAILS_MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | Maximum raw HTTP request body size; rejects oversized payloads with HTTP 413. |
+| `GUARDRAILS_TRUSTED_PROXIES` | `""` | Comma-separated trusted reverse-proxy IPs for secure `X-Forwarded-For` client IP resolution. |
+| `GUARDRAILS_RATE_LIMIT_BACKEND` | `memory` | Rate-limiting backend: `memory` (process-local) or `redis` (distributed). |
+| `GUARDRAILS_RATE_LIMIT_REDIS_URL` | `""` | Connection URL for shared Redis rate limiting (e.g., `redis://redis:6379/0`). |
+| `GUARDRAILS_RATE_LIMIT_FAIL_CLOSED` | `false` | If `true`, denies requests when Redis backend is unreachable. |
+| `GUARDRAILS_MAX_PROMPT_CHARS` | `20000` | Maximum character length for input prompts. |
+| `GUARDRAILS_MAX_CONTEXT_DOCS` | `20` | Maximum number of context documents accepted per request. |
+| `GUARDRAILS_MAX_DOC_CHARS` | `50000` | Maximum character length per context document. |
+
+---
+
+
 # API Endpoints
 
 ## GET /health
