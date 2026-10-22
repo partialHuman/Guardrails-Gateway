@@ -512,14 +512,3 @@ Screenshots were taken with v1.0 and will be refreshed.
 
 ---
 
-## AI Assistance Disclosure
-
-AI-assisted tools were used during development to discuss architecture, review implementation approaches, improve documentation, and identify potential edge cases.
-
-All implementation decisions, testing, debugging, and final validation were performed by the author before submission.
-
----
-
-# Author
-
-**Dhrumil Moga**
