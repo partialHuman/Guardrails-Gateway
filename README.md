@@ -512,3 +512,6 @@ Screenshots were taken with v1.0 and will be refreshed.
 
 ---
 
+# Author
+
+**Dhrumil Moga**
