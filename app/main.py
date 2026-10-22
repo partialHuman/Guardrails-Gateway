@@ -1,3 +1,5 @@
+import math
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -6,13 +8,21 @@ from app.config import (
     API_TITLE,
     API_VERSION,
     MAX_REQUEST_BODY_BYTES,
+    RATE_LIMIT_BACKEND,
+    RATE_LIMIT_FAIL_CLOSED,
+    RATE_LIMIT_REDIS_URL,
     RATE_LIMIT_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
+    TRUSTED_PROXIES,
 )
 from app.core.analyzer import analyze_request
 from app.core.logger import logger
 from app.core.policy import POLICY
-from app.core.rate_limiter import InMemoryRateLimiter
+from app.core.rate_limiter import (
+    RateLimiterBackend,
+    client_ip_from_request,
+    create_rate_limiter,
+)
 from app.schemas import AnalyzeRequest, AnalyzeResponse
 
 app = FastAPI(
@@ -21,9 +31,12 @@ app = FastAPI(
     description=API_DESCRIPTION,
 )
 
-rate_limiter = InMemoryRateLimiter(
+rate_limiter: RateLimiterBackend = create_rate_limiter(
+    backend=RATE_LIMIT_BACKEND,
     max_requests=RATE_LIMIT_REQUESTS,
     window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+    redis_url=RATE_LIMIT_REDIS_URL,
+    fail_closed=RATE_LIMIT_FAIL_CLOSED,
 )
 
 _SECURITY_HEADERS = {
@@ -97,13 +110,18 @@ async def enforce_request_body_size(request: Request, call_next):
 async def enforce_rate_limit(request: Request, call_next):
     """Limit requests per client IP address."""
     client = request.client
-    client_id = client.host if client is not None else "unknown"
+    client_id = client_ip_from_request(
+        request_client_host=client.host if client is not None else None,
+        forwarded_for_header=request.headers.get("x-forwarded-for"),
+        trusted_proxies=TRUSTED_PROXIES,
+    )
 
-    if not rate_limiter.allow(client_id):
+    allowed, retry_after = rate_limiter.allow(client_id)
+    if not allowed:
         return JSONResponse(
             status_code=429,
             content={"detail": "Too Many Requests"},
-            headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
+            headers={"Retry-After": str(math.ceil(retry_after))},
         )
 
     return await call_next(request)
