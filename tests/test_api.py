@@ -410,3 +410,43 @@ def test_valid_request_id_is_preserved():
     )
 
     assert response.status_code == 200
+
+def test_rate_limit_returns_429_and_retry_after(monkeypatch):
+    from app.main import rate_limiter
+
+    monkeypatch.setattr(rate_limiter, "max_requests", 1)
+    monkeypatch.setattr(rate_limiter, "window_seconds", 60)
+    rate_limiter._requests.clear()
+
+    try:
+        first = client.get("/policy")
+        second = client.get("/policy")
+
+        assert first.status_code == 200
+        assert second.status_code == 429
+        assert second.json() == {"detail": "Too Many Requests"}
+        assert second.headers["retry-after"] == "60"
+    finally:
+        rate_limiter._requests.clear()
+
+
+def test_rate_limit_does_not_trust_forwarded_for_header(monkeypatch):
+    from app.main import rate_limiter
+
+    monkeypatch.setattr(rate_limiter, "max_requests", 1)
+    rate_limiter._requests.clear()
+
+    try:
+        first = client.get(
+            "/policy",
+            headers={"X-Forwarded-For": "198.51.100.10"},
+        )
+        second = client.get(
+            "/policy",
+            headers={"X-Forwarded-For": "198.51.100.11"},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 429
+    finally:
+        rate_limiter._requests.clear()

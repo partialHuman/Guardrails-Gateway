@@ -10,12 +10,40 @@ from app.core.logger import logger
 from app.core.policy import POLICY
 from app.schemas import AnalyzeRequest, AnalyzeResponse
 
+from app.config import (
+    API_DESCRIPTION,
+    API_TITLE,
+    API_VERSION,
+    RATE_LIMIT_REQUESTS,
+    RATE_LIMIT_WINDOW_SECONDS,
+)
+from app.core.rate_limiter import InMemoryRateLimiter
+
 app = FastAPI(
     title=API_TITLE,
     version=API_VERSION,
     description=API_DESCRIPTION,
 )
 
+rate_limiter = InMemoryRateLimiter(
+    max_requests=RATE_LIMIT_REQUESTS,
+    window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+)
+
+@app.middleware("http")
+async def enforce_rate_limit(request: Request, call_next):
+    """Limit requests per client IP address."""
+    client = request.client
+    client_id = client.host if client is not None else "unknown"
+
+    if not rate_limiter.allow(client_id):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too Many Requests"},
+            headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
+        )
+
+    return await call_next(request)
 
 @app.exception_handler(Exception)
 async def unexpected_exception_handler(
