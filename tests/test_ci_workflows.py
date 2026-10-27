@@ -160,7 +160,7 @@ def test_trufflehog_native_event_handling_configuration(workflow_texts):
     assert "fetch-depth: 0" in sec_text, "TruffleHog checkout must specify fetch-depth: 0 for full git history"
 
     # 2. Verify pinned TruffleHog action SHA and required arguments
-    pinned_action = "uses: trufflesecurity/trufflehog@c85580b712841eda4c53bc28fc6ace6100e8c16c"
+    pinned_action = "uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2"
     assert pinned_action in sec_text, "TruffleHog step must use immutable commit SHA pin"
     assert "--only-verified" in sec_text, "TruffleHog step must include --only-verified flag"
     assert "path: ./" in sec_text, "TruffleHog step must include path: ./"
