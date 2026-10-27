@@ -81,6 +81,4 @@ jobs:
         uses: trufflesecurity/trufflehog@c85580b712841eda4c53bc28fc6ace6100e8c16c # v3.99.4
         with:
           path: ./
-          base: "${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}"
-          head: "${{ github.event.pull_request.head.sha || 'HEAD' }}"
           extra_args: --only-verified

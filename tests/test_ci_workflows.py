@@ -150,3 +150,57 @@ def test_security_policy_file_exists():
     assert "Critical" in content
     assert "TruffleHog" in content
     assert "CodeQL" in content
+
+
+def test_trufflehog_native_event_handling_configuration(workflow_texts):
+    """Verify TruffleHog secret-scan job relies on native action event dispatching without manual base/head."""
+    sec_text = workflow_texts["security.yml"]
+
+    # 1. Verify checkout retains fetch-depth: 0
+    assert "fetch-depth: 0" in sec_text, "TruffleHog checkout must specify fetch-depth: 0 for full git history"
+
+    # 2. Verify pinned TruffleHog action SHA and required arguments
+    pinned_action = "uses: trufflesecurity/trufflehog@c85580b712841eda4c53bc28fc6ace6100e8c16c"
+    assert pinned_action in sec_text, "TruffleHog step must use immutable commit SHA pin"
+    assert "--only-verified" in sec_text, "TruffleHog step must include --only-verified flag"
+    assert "path: ./" in sec_text, "TruffleHog step must include path: ./"
+
+    # 3. Verify that base and head inputs are NOT explicitly defined, enabling native event handling
+    if yaml is not None:
+        parsed = yaml.safe_load(sec_text)
+        jobs = parsed.get("jobs", {})
+        secret_job = jobs.get("secret-scan", {})
+        steps = secret_job.get("steps", [])
+
+        # Find trufflehog step
+        truffle_step = None
+        for step in steps:
+            uses = step.get("uses", "")
+            if "trufflesecurity/trufflehog" in uses:
+                truffle_step = step
+                break
+
+        assert truffle_step is not None, "security.yml missing TruffleHog action step"
+        step_with = truffle_step.get("with", {})
+        assert "base" not in step_with, (
+            "TruffleHog step must omit explicit 'base' input to enable native push/PR/schedule dispatch"
+        )
+        assert "head" not in step_with, (
+            "TruffleHog step must omit explicit 'head' input to enable native push/PR/schedule dispatch"
+        )
+        assert step_with.get("path") == "./"
+        assert "--only-verified" in step_with.get("extra_args", "")
+
+        # 4. Verify triggers include push, pull_request, and schedule
+        triggers = parsed.get(True) or parsed.get("on", {})
+        assert "push" in triggers, "security.yml must trigger on push"
+        assert "pull_request" in triggers, "security.yml must trigger on pull_request"
+        assert "schedule" in triggers, "security.yml must trigger on schedule"
+    else:
+        # Regex fallback when PyYAML is not installed
+        assert not re.search(r"^\s+base:\s*", sec_text, re.MULTILINE), (
+            "security.yml must omit explicit 'base' input to avoid base == head error"
+        )
+        assert not re.search(r"^\s+head:\s*", sec_text, re.MULTILINE), (
+            "security.yml must omit explicit 'head' input to avoid base == head error"
+        )
