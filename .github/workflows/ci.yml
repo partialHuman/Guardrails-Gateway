@@ -40,7 +40,7 @@ jobs:
           pip install -r requirements.dev.txt
 
       - name: Run test suite with coverage
-        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=95 -v
+        run: python -m pytest -m "not e2e" --cov=app --cov-report=term-missing --cov-fail-under=95 -v
 
   browser-e2e:
     name: Browser E2E Tests (Playwright / Chromium / Python 3.11)
@@ -86,6 +86,7 @@ jobs:
           TEST_GUARDRAILS_API_KEY: synthetic-ci-key-v12-9988
           TEST_GUARDRAILS_UI_PASSWORD: synthetic-ci-ui-pw-4421
           CI: "true"
+          CI_E2E: "true"
         run: |
           set -eo pipefail
 
@@ -149,7 +150,7 @@ jobs:
           wait_for_service "http://127.0.0.1:8501/_stcore/health" "Streamlit UI" 30 "$UI_LOG"
 
           echo "Running Playwright browser tests..."
-          pytest tests/test_ui_e2e.py -v | tee "$TEST_LOG"
+          pytest -m e2e tests/test_ui_e2e.py -v | tee "$TEST_LOG"
 
           # Verify that CI cannot pass if tests were skipped or fewer than 6 executed
           grep -E "6 passed" "$TEST_LOG" >/dev/null || {
