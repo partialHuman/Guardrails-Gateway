@@ -151,90 +151,56 @@ def test_security_policy_file_exists():
     assert "TruffleHog" in content
     assert "CodeQL" in content
 
-def test_trufflehog_configuration_has_push_event_safety(workflow_texts):
-    """Verify TruffleHog step safely differentiates push vs PR events and avoids identical base/head."""
+
+def test_trufflehog_native_event_handling_configuration(workflow_texts):
+    """Verify TruffleHog secret-scan job relies on native action event dispatching without manual base/head."""
     sec_text = workflow_texts["security.yml"]
 
-    # Must use pinned action
-    assert "uses: trufflesecurity/trufflehog@c85580b712841eda4c53bc28fc6ace6100e8c16c" in sec_text
-    assert "--only-verified" in sec_text
+    # 1. Verify checkout retains fetch-depth: 0
+    assert "fetch-depth: 0" in sec_text, "TruffleHog checkout must specify fetch-depth: 0 for full git history"
 
-    # Must not blindly fall back to default_branch on push (which causes base == head error)
-    assert "github.event.repository.default_branch" not in sec_text, (
-        "security.yml must not use default_branch as fallback for base, as it causes base == head error on pushes"
-    )
+    # 2. Verify pinned TruffleHog action SHA and required arguments
+    pinned_action = "uses: trufflesecurity/trufflehog@c85580b712841eda4c53bc28fc6ace6100e8c16c"
+    assert pinned_action in sec_text, "TruffleHog step must use immutable commit SHA pin"
+    assert "--only-verified" in sec_text, "TruffleHog step must include --only-verified flag"
+    assert "path: ./" in sec_text, "TruffleHog step must include path: ./"
 
-    # Must handle pull_request base and push before
-    assert "github.event.pull_request.base.sha" in sec_text
-    assert "github.event.before" in sec_text
-    # Must handle zero-SHA initial push fallback
-    assert "0000000000000000000000000000000000000000" in sec_text
-    assert "HEAD~1" in sec_text
+    # 3. Verify that base and head inputs are NOT explicitly defined, enabling native event handling
+    if yaml is not None:
+        parsed = yaml.safe_load(sec_text)
+        jobs = parsed.get("jobs", {})
+        secret_job = jobs.get("secret-scan", {})
+        steps = secret_job.get("steps", [])
 
+        # Find trufflehog step
+        truffle_step = None
+        for step in steps:
+            uses = step.get("uses", "")
+            if "trufflesecurity/trufflehog" in uses:
+                truffle_step = step
+                break
 
-@pytest.mark.parametrize(
-    "event_name,pr_base,pr_head,before,sha,expected_base,expected_head",
-    [
-        (
-            "pull_request",
-            "1111111111111111111111111111111111111111",
-            "2222222222222222222222222222222222222222",
-            "",
-            "2222222222222222222222222222222222222222",
-            "1111111111111111111111111111111111111111",
-            "2222222222222222222222222222222222222222",
-        ),
-        (
-            "push",
-            "",
-            "",
-            "3333333333333333333333333333333333333333",
-            "4444444444444444444444444444444444444444",
-            "3333333333333333333333333333333333333333",
-            "4444444444444444444444444444444444444444",
-        ),
-        (
-            "push_initial_zeros",
-            "",
-            "",
-            "0000000000000000000000000000000000000000",
-            "5555555555555555555555555555555555555555",
-            "HEAD~1",
-            "5555555555555555555555555555555555555555",
-        ),
-        (
-            "push_unavailable_before",
-            "",
-            "",
-            "",
-            "6666666666666666666666666666666666666666",
-            "HEAD~1",
-            "6666666666666666666666666666666666666666",
-        ),
-        (
-            "push_identical_before_and_sha",
-            "",
-            "",
-            "7777777777777777777777777777777777777777",
-            "7777777777777777777777777777777777777777",
-            "HEAD~1",
-            "7777777777777777777777777777777777777777",
-        ),
-    ],
-)
-def test_trufflehog_event_resolution_logic(
-    event_name, pr_base, pr_head, before, sha, expected_base, expected_head
-):
-    """Simulate GitHub Actions expression evaluation for TruffleHog base and head."""
-    if pr_base:
-        resolved_base = pr_base
-    elif before and before != "0000000000000000000000000000000000000000" and before != sha:
-        resolved_base = before
+        assert truffle_step is not None, "security.yml missing TruffleHog action step"
+        step_with = truffle_step.get("with", {})
+        assert "base" not in step_with, (
+            "TruffleHog step must omit explicit 'base' input to enable native push/PR/schedule dispatch"
+        )
+        assert "head" not in step_with, (
+            "TruffleHog step must omit explicit 'head' input to enable native push/PR/schedule dispatch"
+        )
+        assert step_with.get("path") == "./"
+        assert "--only-verified" in step_with.get("extra_args", "")
+
+        # 4. Verify triggers include push, pull_request, and schedule
+        triggers = parsed.get(True) or parsed.get("on", {})
+        assert "push" in triggers, "security.yml must trigger on push"
+        assert "pull_request" in triggers, "security.yml must trigger on pull_request"
+        assert "schedule" in triggers, "security.yml must trigger on schedule"
     else:
-        resolved_base = "HEAD~1"
-
-    resolved_head = pr_head or sha or "HEAD"
-
-    assert resolved_base == expected_base
-    assert resolved_head == expected_head
-    assert resolved_base != resolved_head, f"Base and head must never be identical for {event_name}"
+        # Regex fallback when PyYAML is not installed
+        assert not re.search(r"^\s+base:\s*", sec_text, re.MULTILINE), (
+            "security.yml must omit explicit 'base' input to avoid base == head error"
+        )
+        assert not re.search(r"^\s+head:\s*", sec_text, re.MULTILINE), (
+            "security.yml must omit explicit 'head' input to avoid base == head error"
+        )
