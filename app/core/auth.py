@@ -59,7 +59,14 @@ def verify_api_key(provided_key: str | None, expected_key: str) -> bool:
     """
     if not provided_key or not expected_key:
         return False
-    return secrets.compare_digest(provided_key, expected_key)
+
+    # Compare BYTES, not str: secrets.compare_digest(str, str) raises
+    # TypeError for non-ASCII input, which turned a bad credential into an
+    # HTTP 500 (and a logged traceback) instead of a clean 401.
+    return secrets.compare_digest(
+        provided_key.encode("utf-8", "surrogatepass"),
+        expected_key.encode("utf-8", "surrogatepass"),
+    )
 
 
 def is_public_path(path: str, public_paths: frozenset[str] | None = None) -> bool:
@@ -108,14 +115,65 @@ def auth_misconfigured_response() -> JSONResponse:
     )
 
 
-def validate_auth_config(require_auth: bool, api_key: str) -> None:
+MIN_RECOMMENDED_KEY_CHARS = 16
+
+
+def auth_is_misconfigured(
+    require_auth: bool,
+    api_key: str,
+    allow_anonymous: bool = True,
+) -> bool:
+    """True when the gateway must NOT serve protected routes.
+
+    That is the case when authentication is demanded (explicitly via
+    REQUIRE_AUTH, or implicitly because anonymous access was not allowed)
+    but no API key is configured.
+    """
+    return (require_auth or not allow_anonymous) and not api_key
+
+
+def validate_auth_config(
+    require_auth: bool,
+    api_key: str,
+    allow_anonymous: bool = True,
+) -> None:
     """Validate server authentication configuration at startup.
 
     Raises:
-        RuntimeError: If authentication is required but no key is configured.
+        RuntimeError: If authentication is required but no key is configured,
+            or if anonymous access is not allowed and no key is configured.
     """
     if require_auth and not api_key:
         raise RuntimeError(
             "GUARDRAILS_REQUIRE_AUTH is set to true, but GUARDRAILS_API_KEY is empty or not configured. "
             "The gateway will not run unauthenticated when authentication is required."
         )
+
+    if not allow_anonymous and not api_key:
+        raise RuntimeError(
+            "No GUARDRAILS_API_KEY is configured and anonymous access is not allowed "
+            "(GUARDRAILS_ALLOW_ANONYMOUS=false). Set GUARDRAILS_API_KEY, or set "
+            "GUARDRAILS_ALLOW_ANONYMOUS=true to run without authentication (local development only)."
+        )
+
+
+def auth_startup_warnings(
+    require_auth: bool,
+    api_key: str,
+    allow_anonymous: bool = True,
+) -> list[str]:
+    """Human-readable warnings to log once at startup (never contain the key)."""
+    warnings: list[str] = []
+
+    if not (require_auth or api_key):
+        warnings.append(
+            "Authentication is DISABLED: every endpoint, including /analyze and /policy, "
+            "answers anonymous requests. Set GUARDRAILS_API_KEY before exposing this service."
+        )
+    elif api_key and len(api_key) < MIN_RECOMMENDED_KEY_CHARS:
+        warnings.append(
+            f"GUARDRAILS_API_KEY is shorter than {MIN_RECOMMENDED_KEY_CHARS} characters; "
+            "use a long random value (e.g. python -c \"import secrets; print(secrets.token_urlsafe(32))\")."
+        )
+
+    return warnings

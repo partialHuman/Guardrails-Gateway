@@ -102,12 +102,13 @@ class TestMiddlewareSecurityHeaderConsistency:
         limiter = InMemoryRateLimiter(max_requests=1, window_seconds=60)
         monkeypatch.setattr("app.main.rate_limiter", limiter)
 
+        # /health is exempt from rate limiting, so use a real endpoint.
         # First request succeeds
-        resp1 = client.get("/health")
+        resp1 = client.get("/policy")
         assert resp1.status_code == 200
 
         # Second request from same client is rate limited
-        resp2 = client.get("/health")
+        resp2 = client.get("/policy")
         assert resp2.status_code == 429
         assert resp2.json()["detail"] == "Too Many Requests"
         assert "Retry-After" in resp2.headers
@@ -161,11 +162,13 @@ class TestConfigurationSafetyAndBounds:
         monkeypatch.setenv("TEST_ZERO_ENV", "0")
         assert max(1, _int_env("TEST_ZERO_ENV", 100)) == 1
 
-    def test_malformed_env_vars_use_safe_defaults(self, monkeypatch):
+    def test_malformed_env_vars_fail_fast(self, monkeypatch):
         from app.config import _int_env
 
         monkeypatch.setenv("TEST_BAD_ENV", "not-a-number")
-        assert _int_env("TEST_BAD_ENV", 42) == 42
+
+        with pytest.raises(ValueError, match="TEST_BAD_ENV"):
+            _int_env("TEST_BAD_ENV", 42)
 
 
 class TestProxyTrustBoundaries:

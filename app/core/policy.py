@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from app.core.findings import ACTION_QUARANTINE, ACTION_REDACT
 
-POLICY_VERSION = "2"
+POLICY_VERSION = "3"
 
 # ==========================================================
 # Decision thresholds
@@ -27,6 +27,30 @@ POLICY_VERSION = "2"
 BLOCK_THRESHOLD = 80
 
 TRANSFORM_THRESHOLD = 40
+
+# ==========================================================
+# Scan limits (denial-of-service protection)
+# ==========================================================
+
+# Every text is scanned and redacted completely (no per-rule caps: a cap
+# silently leaves matches beyond it in the "sanitized" output). Instead the
+# whole REQUEST has a budget of findings. Legitimate traffic produces a
+# handful; a request that exceeds the budget is hostile or too dense to
+# redact reliably, so scanning stops, any document not yet scanned is
+# quarantined, and the request is BLOCKED (fail closed).
+#
+# The budget is enforced INSIDE the detectors (see ScanBudget): they stop
+# generating findings the moment it is spent. It bounds finding objects and
+# the work done per match, NOT regex CPU time: scanning text that produces
+# no matches costs time proportional to its length whatever the budget is
+# (see the length limits in app/config.py and the README Limitations).
+MAX_FINDINGS_PER_REQUEST = 20_000
+
+LIMIT_RULE_ID = "scan_limit_exceeded"
+
+LIMIT_TAG = "scan_limit"
+
+LIMIT_SEVERITY = 100
 
 # ==========================================================
 # Scoring
@@ -208,6 +232,11 @@ REPLACEMENT_RAG_INJECTION = "[REMOVED_RAG_INJECTION]"
 
 REPLACEMENT_ROLE_MARKER = "[ROLE_MARKER_REMOVED]"
 
+# Returned as `sanitized_prompt` when the prompt could not be scanned to the
+# end (finding budget exhausted). It deliberately contains NONE of the
+# caller's text: a half-redacted prompt must never look like safe output.
+INCOMPLETE_SCAN_PROMPT = "[BLOCKED: prompt could not be fully scanned]"
+
 # Base64 payloads are decoded and re-scanned once.
 ENCODED_PREFIX = "encoded:"
 
@@ -266,6 +295,13 @@ POLICY = {
     "scoring": {
         "extra_rule_bonus": EXTRA_RULE_BONUS,
         "extra_rule_bonus_cap": EXTRA_RULE_BONUS_CAP,
+    },
+
+    "limits": {
+        "max_findings_per_request": MAX_FINDINGS_PER_REQUEST,
+        "on_limit_exceeded": "block",
+        "limit_rule_id": LIMIT_RULE_ID,
+        "incomplete_scan_prompt": INCOMPLETE_SCAN_PROMPT,
     },
 
     "injection_rules": [

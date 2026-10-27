@@ -1,9 +1,19 @@
 from typing import List
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.config import MAX_CONTEXT_DOCS, MAX_DOC_CHARS, MAX_PROMPT_CHARS
 from app.core.findings import Decision  # noqa: F401  (re-exported)
+
+# Identifiers (app / user / document ids) are echoed into responses and logs,
+# so they are length-bounded and must not contain control characters.
+MAX_IDENTIFIER_CHARS = 128
+
+
+def _reject_control_characters(value: str, field_name: str) -> str:
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError(f"{field_name} must not contain control characters")
+
+    return value
 
 
 # ==========================================================
@@ -16,9 +26,15 @@ class ContextDocument(BaseModel):
     id: str = Field(
         ...,
         min_length=1,
+        max_length=MAX_IDENTIFIER_CHARS,
         description="Unique document identifier",
         examples=["doc-1"]
     )
+
+    @field_validator("id")
+    @classmethod
+    def validate_document_id(cls, value: str) -> str:
+        return _reject_control_characters(value, "id")
 
     text: str = Field(
         ...,
@@ -36,18 +52,44 @@ class ContextDocument(BaseModel):
     )
 
 
+class SanitizedDocument(BaseModel):
+    """
+    Context document as returned in a response.
+
+    Deliberately has no length cap: redaction can make text LONGER than the
+    input (``a@b.co`` -> ``[REDACTED_EMAIL]``), and re-applying the request
+    limit to the response turned valid PII-dense documents into HTTP 500s.
+    """
+
+    id: str
+
+    text: str
+
+
 class Metadata(BaseModel):
     """Metadata associated with the request."""
 
     app_id: str = Field(
         ...,
+        max_length=MAX_IDENTIFIER_CHARS,
         examples=["chatbot-prod"]
     )
 
     user_id: str = Field(
         ...,
+        max_length=MAX_IDENTIFIER_CHARS,
         examples=["user-123"]
     )
+
+    @field_validator("app_id")
+    @classmethod
+    def validate_app_id(cls, value: str) -> str:
+        return _reject_control_characters(value, "app_id")
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str) -> str:
+        return _reject_control_characters(value, "user_id")
 
 
     request_id: str = Field(
@@ -63,10 +105,7 @@ class Metadata(BaseModel):
         if not value.strip():
             raise ValueError("request_id must not be empty or whitespace-only")
 
-        if any(ord(char) < 32 or ord(char) == 127 for char in value):
-            raise ValueError("request_id must not contain control characters")
-
-        return value
+        return _reject_control_characters(value, "request_id")
 
 
     model_config = ConfigDict(
@@ -173,7 +212,7 @@ class AnalyzeResponse(BaseModel):
 
     sanitized_prompt: str
 
-    sanitized_context_docs: List[ContextDocument] = Field(
+    sanitized_context_docs: List[SanitizedDocument] = Field(
         ...,
         description="Context documents after redaction. Quarantined documents are NOT included."
     )
@@ -184,6 +223,12 @@ class AnalyzeResponse(BaseModel):
     )
 
     reasons: List[Reason]
+
+    policy_version: str = Field(
+        "",
+        description="Version of the detection policy that produced this decision (see GET /policy)",
+        examples=["3"],
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -202,6 +247,7 @@ class AnalyzeResponse(BaseModel):
                     }
                 ],
                 "quarantined_doc_ids": [],
+                "policy_version": "3",
                 "reasons": [
                     {
                         "tag": "prompt_injection",
