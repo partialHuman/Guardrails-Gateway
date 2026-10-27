@@ -361,16 +361,16 @@ def test_max_request_body_bytes_env_override(monkeypatch):
         importlib.reload(cfg)
 
 
-def test_max_request_body_bytes_env_invalid_falls_back_to_default(monkeypatch):
-    """An invalid env value for MAX_REQUEST_BODY_BYTES falls back to the default."""
+def test_max_request_body_bytes_env_invalid_is_rejected(monkeypatch):
+    """An invalid env value for MAX_REQUEST_BODY_BYTES stops startup (no silent default)."""
     import importlib
 
     import app.config as cfg
 
     monkeypatch.setenv("GUARDRAILS_MAX_REQUEST_BODY_BYTES", "not-a-number")
-    importlib.reload(cfg)
     try:
-        assert cfg.MAX_REQUEST_BODY_BYTES == 1_048_576
+        with pytest.raises(ValueError, match="GUARDRAILS_MAX_REQUEST_BODY_BYTES"):
+            importlib.reload(cfg)
     finally:
         monkeypatch.delenv("GUARDRAILS_MAX_REQUEST_BODY_BYTES", raising=False)
         importlib.reload(cfg)

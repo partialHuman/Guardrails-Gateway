@@ -13,10 +13,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import time
 import uuid
 from collections import defaultdict, deque
+from functools import lru_cache
 from threading import Lock
 from time import monotonic
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -46,6 +48,12 @@ class RateLimiterBackend(Protocol):
 # ──────────────────────────────────────────────────────────────────
 
 
+# Shared bucket used once the in-memory table is full (see max_clients).
+OVERFLOW_CLIENT_ID = "__overflow__"
+
+DEFAULT_MAX_CLIENTS = 50_000
+
+
 class InMemoryRateLimiter:
     """Sliding-window rate limiter backed by process-local memory.
 
@@ -63,6 +71,13 @@ class InMemoryRateLimiter:
     The eviction sweep runs at most once every *window_seconds* to avoid
     adding per-request overhead.
 
+    The table is also bounded: at most *max_clients* distinct clients are
+    tracked (about 870 bytes each). When it is full, stale entries are
+    swept immediately and, if there is still no room, new clients share a
+    single overflow bucket. Memory therefore stays bounded even if an
+    attacker rotates through millions of source addresses, at the cost of
+    those overflow clients sharing one quota.
+
     Retry-After
     -----------
     When a request is denied, ``retry_after`` reports the number of
@@ -70,19 +85,26 @@ class InMemoryRateLimiter:
     making room for a new one.
     """
 
+    #: In-memory work is fast and non-blocking; no need for a worker thread.
+    blocking = False
+
     def __init__(
         self,
         max_requests: int,
         window_seconds: int,
         clock: Callable[[], float] = monotonic,
+        max_clients: int = DEFAULT_MAX_CLIENTS,
     ) -> None:
         if max_requests < 1:
             raise ValueError("max_requests must be at least 1")
         if window_seconds < 1:
             raise ValueError("window_seconds must be at least 1")
+        if max_clients < 1:
+            raise ValueError("max_clients must be at least 1")
 
         self.max_requests = max_requests
         self.window_seconds = window_seconds
+        self.max_clients = max_clients
         self._clock = clock
         self._requests: dict[str, deque[float]] = defaultdict(deque)
         self._lock = Lock()
@@ -103,6 +125,17 @@ class InMemoryRateLimiter:
         with self._lock:
             # Periodic eviction of stale entries.
             self._maybe_evict(now)
+
+            # Bound memory: a table that is full of live clients must not
+            # grow further, whatever the attacker's address diversity.
+            if (
+                client_id not in self._requests
+                and len(self._requests) >= self.max_clients
+            ):
+                self._evict_stale(now)
+
+                if len(self._requests) >= self.max_clients:
+                    client_id = OVERFLOW_CLIENT_ID
 
             timestamps = self._requests[client_id]
 
@@ -131,6 +164,10 @@ class InMemoryRateLimiter:
         if now - self._last_eviction < self.window_seconds:
             return
 
+        self._evict_stale(now)
+
+    def _evict_stale(self, now: float) -> None:
+        """Drop every client whose newest request has left the window."""
         cutoff = now - self.window_seconds
         stale_keys = [
             key
@@ -199,6 +236,10 @@ class RedisRateLimiter:
     back to per-process in-memory counters, ensuring behavior remains explicit.
     """
 
+    #: redis-py's sync client does network I/O; callers on an event loop
+    #: must run ``allow`` in a worker thread (see app.main).
+    blocking = True
+
     def __init__(
         self,
         client: Any,
@@ -263,14 +304,24 @@ def create_rate_limiter(
     redis_client: Any = None,
     fail_closed: bool = False,
     clock: Callable[[], float] | None = None,
+    prefix: str | None = None,
+    redis_timeout: float | None = None,
+    max_clients: int = DEFAULT_MAX_CLIENTS,
 ) -> RateLimiterBackend:
-    """Create a configured rate limiter backend instance."""
+    """Create a configured rate limiter backend instance.
+
+    ``prefix`` namespaces Redis keys (so several limiters can share one
+    Redis); ``redis_timeout`` sets the connect and read timeout in seconds
+    (redis-py otherwise waits indefinitely); ``max_clients`` bounds the
+    in-memory table.
+    """
     normalized_backend = backend.lower().strip()
     if normalized_backend == "memory":
         return InMemoryRateLimiter(
             max_requests=max_requests,
             window_seconds=window_seconds,
             clock=clock or monotonic,
+            max_clients=max_clients,
         )
     elif normalized_backend == "redis":
         if redis_client is None:
@@ -285,7 +336,16 @@ def create_rate_limiter(
                     "The 'redis' package is required when using the Redis rate limiter backend. "
                     "Install it with: pip install redis"
                 ) from exc
-            redis_client = redis.from_url(redis_url)
+            if redis_timeout is None:
+                redis_client = redis.from_url(redis_url)
+            else:
+                redis_client = redis.from_url(
+                    redis_url,
+                    socket_timeout=redis_timeout,
+                    socket_connect_timeout=redis_timeout,
+                )
+
+        extra = {"prefix": prefix} if prefix else {}
 
         return RedisRateLimiter(
             client=redis_client,
@@ -293,6 +353,7 @@ def create_rate_limiter(
             window_seconds=window_seconds,
             fail_closed=fail_closed,
             clock=clock or time.time,
+            **extra,
         )
     else:
         raise ValueError(
@@ -303,6 +364,63 @@ def create_rate_limiter(
 # ──────────────────────────────────────────────────────────────────
 # Client-IP extraction with trusted-proxy support
 # ──────────────────────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=32)
+def _trusted_networks(
+    trusted_proxies: frozenset[str],
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse trusted-proxy entries (IP addresses or CIDR networks)."""
+    networks = []
+
+    for entry in trusted_proxies:
+        try:
+            networks.append(ipaddress.ip_network(entry.strip(), strict=False))
+        except ValueError:
+            # Config validation rejects bad entries at startup; direct
+            # callers simply never match an unparseable one.
+            continue
+
+    return tuple(networks)
+
+
+def _parse_ip(
+    value: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse an address as it appears in a header or socket.
+
+    Accepts ``1.2.3.4``, ``1.2.3.4:5678``, ``2001:db8::1`` and
+    ``[2001:db8::1]:443``; IPv4-mapped IPv6 addresses are folded to IPv4.
+    Returns ``None`` for anything else.
+    """
+    text = value.strip()
+
+    if text.startswith("["):
+        closing = text.find("]")
+        if closing == -1:
+            return None
+        text = text[1:closing]
+    elif text.count(":") == 1 and "." in text:
+        text = text.rsplit(":", 1)[0]
+
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+
+    mapped = getattr(address, "ipv4_mapped", None)
+
+    return mapped if mapped is not None else address
+
+
+def _is_trusted(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    return any(
+        address.version == network.version and address in network
+        for network in networks
+    )
 
 
 def client_ip_from_request(
@@ -320,8 +438,9 @@ def client_ip_from_request(
     forwarded_for_header:
         The raw ``X-Forwarded-For`` header value, or ``None``.
     trusted_proxies:
-        A frozen set of IP addresses whose ``X-Forwarded-For`` values
-        may be trusted.  When the TCP peer is in this set, the
+        A frozen set of IP addresses and/or CIDR networks (for example
+        ``{"10.0.0.1", "172.18.0.0/16"}``) whose ``X-Forwarded-For``
+        values may be trusted.  When the TCP peer is inside this set, the
         **rightmost untrusted** entry from ``X-Forwarded-For`` is used.
         If ``None`` or empty, ``X-Forwarded-For`` is **never** trusted
         and the TCP peer address is always used.
@@ -339,6 +458,10 @@ def client_ip_from_request(
     * The *rightmost-untrusted* strategy is resistant to client-injected
       header values because it walks the chain from the end (closest to
       the server), skipping only addresses the operator has vouched for.
+    * A trusted proxy always appends a well-formed address. If the entry
+      being examined is NOT a valid IP address, the header is malformed or
+      forged and is ignored entirely (the TCP peer is used), so a hostile
+      string can never become a rate-limit identity.
     * If extraction fails for any reason, the fallback ``"unknown"``
       ensures the limiter still works (all unidentifiable clients share
       one bucket, which is conservative).
@@ -348,15 +471,51 @@ def client_ip_from_request(
     if not trusted_proxies or not forwarded_for_header:
         return peer
 
-    if peer not in trusted_proxies:
+    networks = _trusted_networks(frozenset(trusted_proxies))
+
+    peer_ip = _parse_ip(peer)
+
+    if peer_ip is None or not _is_trusted(peer_ip, networks):
         return peer
 
     # Walk the X-Forwarded-For chain from the right, skipping trusted
     # proxies, and return the first untrusted address.
     parts = [p.strip() for p in forwarded_for_header.split(",") if p.strip()]
-    for addr in reversed(parts):
-        if addr not in trusted_proxies:
-            return addr
+
+    for raw in reversed(parts):
+        address = _parse_ip(raw)
+
+        if address is None:
+            return peer
+
+        if not _is_trusted(address, networks):
+            return str(address)
 
     # Every address in the chain is trusted — use the TCP peer.
     return peer
+
+
+IPV6_PREFIX_LENGTH = 64
+
+
+def rate_limit_key(identity: str) -> str:
+    """Map a client identity to the key the limiter counts against.
+
+    IPv4 addresses are used as-is. IPv6 addresses are collapsed to their
+    /64 network, because one subscriber typically controls a whole /64
+    (2**64 addresses) and could otherwise rotate source addresses to get a
+    fresh quota on every request. Non-IP identities (for example
+    ``"unknown"``) are returned unchanged, truncated to a sane length.
+    """
+    address = _parse_ip(identity)
+
+    if address is None:
+        return identity[:128]
+
+    if address.version == 6:
+        network = ipaddress.ip_network(
+            f"{address}/{IPV6_PREFIX_LENGTH}", strict=False
+        )
+        return str(network)
+
+    return str(address)
