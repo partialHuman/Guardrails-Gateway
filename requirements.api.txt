@@ -1,6 +1,6 @@
 # Runtime dependencies of the API (what the Docker image installs).
 # Dev/test tools live in requirements.dev.txt, the UI in requirements.ui.txt.
 fastapi==0.139.2
-starlette==1.3.1
+starlette==1.10.0
 pydantic==2.13.4
 uvicorn==0.51.0
