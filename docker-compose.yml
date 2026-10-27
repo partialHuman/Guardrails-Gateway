@@ -6,8 +6,20 @@ services:
       dockerfile: Dockerfile.api
     container_name: sentraguard-api
     ports:
-      - "8000:8000"
+      # Bound to this machine only by default. Set GUARDRAILS_BIND_ADDRESS=0.0.0.0
+      # (and a real API key) only when you intend to expose the gateway.
+      - "${GUARDRAILS_BIND_ADDRESS:-127.0.0.1}:8000:8000"
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status == 200 else 1)"]
       interval: 15s
@@ -17,9 +29,13 @@ services:
     environment:
       - GUARDRAILS_API_KEY=${GUARDRAILS_API_KEY:-}
       - GUARDRAILS_REQUIRE_AUTH=${GUARDRAILS_REQUIRE_AUTH:-false}
+      # false = the API refuses to start without GUARDRAILS_API_KEY.
+      - GUARDRAILS_ALLOW_ANONYMOUS=${GUARDRAILS_ALLOW_ANONYMOUS:-false}
       - GUARDRAILS_RATE_LIMIT_REQUESTS=${GUARDRAILS_RATE_LIMIT_REQUESTS:-60}
       - GUARDRAILS_RATE_LIMIT_WINDOW_SECONDS=${GUARDRAILS_RATE_LIMIT_WINDOW_SECONDS:-60}
+      - GUARDRAILS_AUTH_FAILURE_LIMIT_REQUESTS=${GUARDRAILS_AUTH_FAILURE_LIMIT_REQUESTS:-10}
       - GUARDRAILS_MAX_REQUEST_BODY_BYTES=${GUARDRAILS_MAX_REQUEST_BODY_BYTES:-1048576}
+      # IP addresses and/or CIDR networks, e.g. 172.18.0.0/16
       - GUARDRAILS_TRUSTED_PROXIES=${GUARDRAILS_TRUSTED_PROXIES:-}
 
   ui:
@@ -28,12 +44,28 @@ services:
       dockerfile: Dockerfile.ui
     container_name: sentraguard-ui
     ports:
-      - "8501:8501"
+      - "${GUARDRAILS_BIND_ADDRESS:-127.0.0.1}:8501:8501"
     depends_on:
       api:
         condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/appuser/.streamlit
+      - /home/appuser/.cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
     environment:
       # Base address only - the UI appends /analyze itself.
       API_URL: http://api:8000
       GUARDRAILS_API_KEY: ${GUARDRAILS_API_KEY:-}
-    restart: unless-stopped
+      # The UI lends the API key to whoever opens it, so it stays locked unless
+      # a password is set (or anonymous use is explicitly allowed).
+      GUARDRAILS_UI_PASSWORD: ${GUARDRAILS_UI_PASSWORD:-}
+      GUARDRAILS_UI_ALLOW_ANONYMOUS: ${GUARDRAILS_UI_ALLOW_ANONYMOUS:-false}

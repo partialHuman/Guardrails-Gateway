@@ -1,20 +1,37 @@
-import streamlit as st
-import requests
-import json
 import os
+import time
+
+import requests
+import streamlit as st
+
+from ui_helpers import (
+    GATE_LOCKED,
+    GATE_LOGIN,
+    GATE_OPEN_WARN,
+    describe_http_error,
+    evaluate_gate,
+    format_reason_line,
+    normalize_api_url,
+    password_matches,
+)
 
 # Accept both "http://api:8000" and "http://api:8000/analyze" so a
 # mis-set API_URL can never produce ".../analyze/analyze".
-BASE_URL = os.getenv(
-    "API_URL",
-    "http://localhost:8000"
-).rstrip("/")
+BASE_URL, API_URL = normalize_api_url(
+    os.getenv("API_URL", "http://localhost:8000")
+)
 
-if BASE_URL.endswith("/analyze"):
-    BASE_URL = BASE_URL[: -len("/analyze")]
+# Only the dedicated variable is read: a generic API_KEY in the environment
+# belongs to some other service and must never be sent to the gateway.
+API_KEY = os.getenv("GUARDRAILS_API_KEY", "").strip()
 
-API_URL = f"{BASE_URL}/analyze"
-API_KEY = os.getenv("GUARDRAILS_API_KEY", os.getenv("API_KEY", ""))
+# The UI lends its API key to whoever can open the page, so it is locked
+# unless a UI password is set (or anonymous use is explicitly allowed).
+UI_PASSWORD = os.getenv("GUARDRAILS_UI_PASSWORD", "")
+
+UI_ALLOW_ANONYMOUS = os.getenv(
+    "GUARDRAILS_UI_ALLOW_ANONYMOUS", ""
+).strip().lower() in ("true", "1", "yes", "on")
 
 st.set_page_config(
     page_title="SentraGuard Lite",
@@ -26,6 +43,41 @@ st.title("🛡️ SentraGuard Lite")
 st.caption("Offline AI Guardrails Gateway")
 
 st.divider()
+
+# --------------------------------------------------
+# Access gate
+# --------------------------------------------------
+
+_gate = evaluate_gate(API_KEY, UI_PASSWORD, UI_ALLOW_ANONYMOUS)
+
+if _gate == GATE_LOCKED:
+    st.error(
+        "This UI is locked. It holds the gateway API key, so it will not "
+        "serve anonymous visitors.\n\n"
+        "Set GUARDRAILS_UI_PASSWORD to require a login, or set "
+        "GUARDRAILS_UI_ALLOW_ANONYMOUS=true if this instance is only "
+        "reachable by you (for example bound to localhost)."
+    )
+    st.stop()
+
+if _gate == GATE_OPEN_WARN:
+    st.warning(
+        "Anonymous access is enabled: anyone who can reach this page can "
+        "use the gateway through it."
+    )
+
+if _gate == GATE_LOGIN and not st.session_state.get("ui_authenticated"):
+    entered = st.text_input("UI password", type="password")
+
+    if st.button("Log in"):
+        if password_matches(entered, UI_PASSWORD):
+            st.session_state["ui_authenticated"] = True
+            st.rerun()
+        else:
+            time.sleep(1)  # slow down guessing
+            st.error("Incorrect password.")
+
+    st.stop()
 
 # --------------------------------------------------
 # Metadata
@@ -229,12 +281,7 @@ if st.button("Analyze", type="primary"):
 
             for reason in result["reasons"]:
 
-                st.write(
-                    f"• **{reason['tag']}** "
-                    f"(`{reason.get('rule', '')}` in "
-                    f"`{reason.get('source', 'prompt')}`) "
-                    f"→ {reason['evidence']}"
-                )
+                st.text(format_reason_line(reason))
 
         else:
 
@@ -259,11 +306,22 @@ if st.button("Analyze", type="primary"):
         )
 
     except requests.exceptions.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 401:
-            st.error("Authentication failed (401 Unauthorized). Check your GUARDRAILS_API_KEY.")
-        else:
-            st.exception(exc)
 
-    except Exception as e:
+        status = exc.response.status_code if exc.response is not None else 0
 
-        st.exception(e)
+        retry_after = (
+            exc.response.headers.get("Retry-After")
+            if exc.response is not None
+            else None
+        )
+
+        st.error(describe_http_error(status, retry_after))
+
+    except requests.exceptions.Timeout:
+
+        st.error("The gateway did not answer in time.")
+
+    except Exception as exc:
+
+        # Type only: a traceback would expose paths and internal hostnames.
+        st.error(f"Unexpected error ({type(exc).__name__}).")

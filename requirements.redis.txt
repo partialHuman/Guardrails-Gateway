@@ -1,0 +1,4 @@
+# Optional: only needed for GUARDRAILS_RATE_LIMIT_BACKEND=redis (distributed limits).
+# Install with:  pip install -r requirements.redis.txt
+# Pin an exact tested version before using this in production.
+redis>=5.0,<8.0
