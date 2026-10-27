@@ -72,23 +72,22 @@ jobs:
 
       - name: Start services and run Browser E2E tests
         env:
-          # Synthetic Gateway API authentication
-          GUARDRAILS_API_KEY: synthetic-ci-key-v12-9988
           GUARDRAILS_REQUIRE_AUTH: "true"
           GUARDRAILS_ALLOW_ANONYMOUS: "false"
-          # Synthetic Streamlit UI configuration
           API_URL: http://127.0.0.1:8000
-          GUARDRAILS_UI_PASSWORD: synthetic-ci-ui-pw-4421
           GUARDRAILS_UI_ALLOW_ANONYMOUS: "false"
           STREAMLIT_SERVER_HEADLESS: "true"
-          # Playwright test execution environment
           TEST_UI_URL: http://127.0.0.1:8501
-          TEST_GUARDRAILS_API_KEY: synthetic-ci-key-v12-9988
-          TEST_GUARDRAILS_UI_PASSWORD: synthetic-ci-ui-pw-4421
           CI: "true"
           CI_E2E: "true"
         run: |
           set -eo pipefail
+
+          # Generate dynamic isolated ephemeral test credentials for this CI run
+          export GUARDRAILS_API_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          export TEST_GUARDRAILS_API_KEY="$GUARDRAILS_API_KEY"
+          export GUARDRAILS_UI_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(16))')"
+          export TEST_GUARDRAILS_UI_PASSWORD="$GUARDRAILS_UI_PASSWORD"
 
           LOG_DIR="/tmp/sentraguard-e2e-logs"
           mkdir -p "$LOG_DIR"
