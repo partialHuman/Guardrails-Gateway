@@ -231,11 +231,23 @@ class TestConstantTimeVerification:
     def test_empty_or_none_keys_return_false(self, provided, expected):
         assert verify_api_key(provided, expected) is False
 
-    def test_uses_secrets_compare_digest(self):
+    def test_uses_secrets_compare_digest_on_bytes(self):
+        # Bytes, not str: compare_digest(str, str) raises TypeError for
+        # non-ASCII input, which used to surface as an HTTP 500.
         with patch("secrets.compare_digest", return_value=True) as mock_digest:
             result = verify_api_key("key-a", "key-b")
             assert result is True
-            mock_digest.assert_called_once_with("key-a", "key-b")
+            mock_digest.assert_called_once_with(b"key-a", b"key-b")
+
+    @pytest.mark.parametrize(
+        "provided",
+        ["é", "clé-secrète-x", "\xff\xfe", "日本語", "\ud800"],
+    )
+    def test_non_ascii_credentials_are_rejected_not_raised(self, provided):
+        assert verify_api_key(provided, "a-perfectly-normal-key") is False
+
+    def test_non_ascii_key_still_verifies_when_correct(self):
+        assert verify_api_key("clé-secrète-9", "clé-secrète-9") is True
 
 
 # ====================================================================

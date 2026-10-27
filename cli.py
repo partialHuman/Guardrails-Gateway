@@ -75,7 +75,7 @@ def main() -> None:
     parser.add_argument(
         "--api-key",
         default=os.getenv("GUARDRAILS_API_KEY", ""),
-        help="API key for authentication (env: GUARDRAILS_API_KEY)"
+        help="API key (visible in the process list and shell history; prefer the GUARDRAILS_API_KEY environment variable)"
     )
 
     args = parser.parse_args()
