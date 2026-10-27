@@ -485,10 +485,10 @@ class TestClientIpExtraction:
         assert (
             client_ip_from_request(
                 "10.0.0.1",
-                "spoofed.by.client, real.client.ip, 10.0.0.1",
+                "198.51.100.7, 203.0.113.50, 10.0.0.1",
                 trusted_proxies=frozenset({"10.0.0.1"}),
             )
-            == "real.client.ip"
+            == "203.0.113.50"
         )
 
     def test_skips_multiple_trusted_proxies_in_chain(self):
@@ -496,10 +496,10 @@ class TestClientIpExtraction:
         assert (
             client_ip_from_request(
                 "10.0.0.2",
-                "client.ip, 10.0.0.1, 10.0.0.2",
+                "203.0.113.50, 10.0.0.1, 10.0.0.2",
                 trusted_proxies=frozenset({"10.0.0.1", "10.0.0.2"}),
             )
-            == "client.ip"
+            == "203.0.113.50"
         )
 
     def test_all_xff_entries_trusted_returns_peer(self):
@@ -530,10 +530,10 @@ class TestClientIpExtraction:
         assert (
             client_ip_from_request(
                 "10.0.0.1",
-                "  real.ip  , 10.0.0.1  ",
+                "  203.0.113.9  , 10.0.0.1  ",
                 trusted_proxies=frozenset({"10.0.0.1"}),
             )
-            == "real.ip"
+            == "203.0.113.9"
         )
 
 
@@ -725,7 +725,7 @@ class TestConfiguration:
             monkeypatch.delenv("GUARDRAILS_TRUSTED_PROXIES", raising=False)
             importlib.reload(cfg)
 
-    @pytest.mark.parametrize("val", ["true", "1", "yes", "TRUE"])
+    @pytest.mark.parametrize("val", ["true", "1", "yes", "TRUE", "on", " true "])
     def test_fail_closed_truthy_env(self, monkeypatch, val):
         import importlib
 
@@ -739,7 +739,7 @@ class TestConfiguration:
             monkeypatch.delenv("GUARDRAILS_RATE_LIMIT_FAIL_CLOSED", raising=False)
             importlib.reload(cfg)
 
-    @pytest.mark.parametrize("val", ["false", "0", "no", "anything_else"])
+    @pytest.mark.parametrize("val", ["false", "0", "no", "off", "FALSE"])
     def test_fail_closed_falsy_env(self, monkeypatch, val):
         import importlib
 
@@ -749,6 +749,20 @@ class TestConfiguration:
         importlib.reload(cfg)
         try:
             assert cfg.RATE_LIMIT_FAIL_CLOSED is False
+        finally:
+            monkeypatch.delenv("GUARDRAILS_RATE_LIMIT_FAIL_CLOSED", raising=False)
+            importlib.reload(cfg)
+
+    @pytest.mark.parametrize("val", ["anything_else", "maybe", "2"])
+    def test_fail_closed_unrecognised_env_is_rejected(self, monkeypatch, val):
+        import importlib
+
+        import app.config as cfg
+
+        monkeypatch.setenv("GUARDRAILS_RATE_LIMIT_FAIL_CLOSED", val)
+        try:
+            with pytest.raises(ValueError, match="GUARDRAILS_RATE_LIMIT_FAIL_CLOSED"):
+                importlib.reload(cfg)
         finally:
             monkeypatch.delenv("GUARDRAILS_RATE_LIMIT_FAIL_CLOSED", raising=False)
             importlib.reload(cfg)
