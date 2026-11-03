@@ -2,5 +2,5 @@
 # Dev/test tools live in requirements.dev.txt, the UI in requirements.ui.txt.
 fastapi==0.139.2
 starlette==1.10.0
-pydantic==2.14.1
+pydantic==2.14.2
 uvicorn==0.54.0
