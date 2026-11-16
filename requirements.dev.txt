@@ -1,6 +1,6 @@
 # Everything needed to run the test suite locally.
 -r requirements.api.txt
-pytest==9.1.1
+pytest==9.2.0
 httpx2==2.16.0
 pytest-cov
 
