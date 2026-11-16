@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## Unreleased
+
+### Documentation
+
+- Added `docs/post-release-audit-v1.2.0.md` (post-release audit, discrepancy register, and remediation register with maintainer reclassification of BASE-001 as High severity per `.github/SECURITY.md`, completed A-14 governance verification, and open tracking actions A-18/A-19 for repository settings), `docs/release-baseline-v1.2.0.md` (stable baseline and compatibility contract), `docs/roadmap-v1.3.0.md` (proposed v1.3.0 plan), and `docs/release-and-maintenance-policy.md` (semantic versioning, patch-release workflow, security hotfix procedure, tag policy, support lifecycle).
+- Extended and corrected `docs/release-checklist.md`: the container gate now starts the stack before probing, the documented health payload is `{"status":"ok"}`, tagging targets an explicit commit and no longer calls an annotated tag "signed", rollback no longer instructs retracting a published tag, and post-release verification and a patch-release addendum were added.
+- Linked the new documents from the README documentation index.
+
 ## 1.2.0
 
 ### Security
