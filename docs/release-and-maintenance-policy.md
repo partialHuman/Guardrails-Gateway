@@ -121,7 +121,7 @@ Ship only items that are implemented and verified; drop any that are not ready. 
 | 8 | Update `CHANGELOG.md` | Add the entry under the next version heading (or `## Unreleased` until the version is decided) in the right category (§8) |
 | 9 | Update version metadata | `API_VERSION` in `app/config.py` and the top changelog heading **must match**; search the docs for the old version string. (A test enforcing this is proposed as A-10; until then, the checklist verifies it) |
 | 10 | Open a pull request to `main` | Conventional Commit title (`fix: …`); the PR template referenced by CONTRIBUTING does not exist yet — describe scope, risk and test evidence |
-| 11 | Required checks and review | Checks (exact job names): `Run Python tests (Python 3.11)`, `Run Python tests (Python 3.14)`, `Browser E2E Tests (Playwright / Chromium / Python 3.11)`, `Python static security analysis (Bandit)`, `Dependency vulnerability audit (pip-audit)`, `Secret detection (TruffleHog)`, `CodeQL (Python)`. **Whether branch protection currently requires them is unverified [N]** (audit A-14) |
+| 11 | Required checks and review | Checks (exact job names): `Run Python tests (Python 3.11)`, `Run Python tests (Python 3.14)`, `Browser E2E Tests (Playwright / Chromium / Python 3.11)`, `Python static security analysis (Bandit)`, `Dependency vulnerability audit (pip-audit)`, `Secret detection (TruffleHog)`, `CodeQL (Python)`. **Branch protection does not currently enforce them** (empirically confirmed in audit A-14; open tracking action A-18) |
 | 12 | Merge | Follow repository practice (merge commits are used in the history) |
 | 13 | Create an **annotated** tag | `git tag -a vX.Y.Z <merge-sha> -m "SentraGuard Lite vX.Y.Z"` (use `-s` if a signing key is configured); push the tag only after step 12's commit is on `main`/`release/*` |
 | 14 | Publish release notes | Extract the changelog section (snippet below); mark pre-releases only for `-rc` |
@@ -250,6 +250,6 @@ Support commitments are promises; the maintainer should confirm capacity before 
 | 3 | Branch protection / required checks | Require the seven checks in §4 step 11 |
 | 4 | Signed tags | Sign if a key exists |
 | 5 | Align `SECURITY.md` timelines with real capacity | Yes (A-17) |
-| 6 | Severity classification of detection bypasses (High per `SECURITY.md` today) | Decide explicitly (A-17) |
+| 6 | Severity classification of detection bypasses | Resolved: Option A (High per `SECURITY.md`; A-17) |
 | 7 | Add release dates to changelog headings | Yes, from the next release |
 | 8 | Supported Python versions (3.12 and 3.13 are documented but not tested) | Either test them or document 3.11 and 3.14 only (A-11) |

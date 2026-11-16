@@ -36,7 +36,7 @@ Evidence tags used here: **[V]** verified in the release ZIP, **[X]** executed i
 | Tag and GitHub Release | `v1.2.0` | **[N]** not provable from a ZIP; verify with the commands in the [audit §3](post-release-audit-v1.2.0.md#3-release-identity-and-provenance) |
 | License | MIT | [V] |
 
-The baseline is *defined* as the tree of that commit. Until the tag-to-commit mapping is confirmed (audit action A-13), the archive comment is the only identity evidence.
+The baseline is *defined* as the tree of that commit. (The tag-to-commit mapping was confirmed on 2026-11-16 under audit action A-13).
 
 ### 1.2 Supported deployment model
 

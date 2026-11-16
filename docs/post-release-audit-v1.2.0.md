@@ -115,22 +115,27 @@ gh release view v1.2.0 --json tagName,targetCommitish,isPrerelease,isDraft
 
 Comparing extracted trees (not archive bytes) is deliberate: GitHub does not guarantee byte-identical archive regeneration over time.
 
-### 3.1 Verification results on the live repository (closing gaps A-13 and A-14)
+### 3.1 Verification results on the live repository (completing verification items A-13, A-14, A-15)
 
 Conducted on 2026-11-16 with repository access:
 
-| Check / Action | Observed Result | Status |
-|---|---|---|
-| Tag provenance (`git cat-file -t v1.2.0`, `git rev-parse v1.2.0^{commit}`) | Annotated tag object (`56a730a8...`), tagger `Dhrumil20`, pointing to commit `cc31374947395873fa8c43d8dfe0e206027e78ce` | **Verified** [X] |
-| GitHub Release publication (`gh release view v1.2.0`) | Public release `v1.2.0` exists, non-draft, non-prerelease, targeting `cc31374947395873fa8c43d8dfe0e206027e78ce` | **Verified** [X] |
-| CI execution on `cc31374` (`gh run list -c cc31374`) | All workflows succeeded: SentraGuard CI (runs Python 3.11, 3.14, and Playwright E2E), SentraGuard Security (Bandit, pip-audit, TruffleHog), CodeQL Analysis | **Verified** [X] |
-| Branch protection on `main` (`gh api repos/.../branches/main/protection`) | HTTP 404 (`Branch not protected`). No branch protection rules or required status checks are configured | **Not Configured** [X] |
-| Private Vulnerability Reporting (`gh api repos/...`) | `private_vulnerability_reporting_enabled: null` | **Not Enabled** [X] |
+| Check / Action | Observed Result | Verification Status | Implementation Status |
+|---|---|---|---|
+| Tag provenance (`git cat-file -t v1.2.0`, `git rev-parse v1.2.0^{commit}`) | Annotated tag object (`56a730a8...`), tagger `Dhrumil20`, pointing to commit `cc31374947395873fa8c43d8dfe0e206027e78ce` | **Verified** [X] | **Complete** (Released) |
+| GitHub Release publication (`gh release view v1.2.0`) | Public release `v1.2.0` exists, non-draft, non-prerelease, targeting `cc31374947395873fa8c43d8dfe0e206027e78ce` | **Verified** [X] | **Complete** (Published) |
+| CI execution on `cc31374` (`gh run list -c cc31374`) | All workflows succeeded: SentraGuard CI (runs Python 3.11, 3.14, and Playwright E2E), SentraGuard Security (Bandit, pip-audit, TruffleHog), CodeQL Analysis | **Verified** [X] | **Complete** (Passed) |
+| Branch protection on `main` (`gh api repos/.../branches/main/protection`) | HTTP 404 (`Branch not protected`). No branch protection rules or required status checks are configured | **Verified** [X] (Gaps Confirmed) | **Open** (Tracked in A-18) |
+| Private Vulnerability Reporting (`gh api repos/...`) | `private_vulnerability_reporting_enabled: null` | **Verified** [X] (Gaps Confirmed) | **Open** (Tracked in A-19) |
 
-#### Repository Governance Recommendations (for Maintainer Review)
+**Important distinction regarding governance status:**
+Verification item A-14 is **completed** because the live repository configuration was empirically checked and documented. However, the governance controls themselves are **not implemented**. Main branch protection is not enabled, required status checks are not enforced as merge gates, and Private Vulnerability Reporting is not enabled. Remediating these gaps requires maintainer action in repository settings and is tracked as separate open actions:
+- **Action A-18 (Open):** Implementation of `main` branch protection and required CI/security status check gates.
+- **Action A-19 (Open):** Implementation of GitHub Private Vulnerability Reporting.
+
+#### Repository Governance Recommendations (for Maintainer Implementation)
 
 To enforce supply-chain and release integrity, the following repository governance settings are recommended for maintainer configuration:
-1. **Branch Protection on `main`**:
+1. **Branch Protection on `main` (Action A-18)**:
    - Require a pull request before merging (require at least 1 approving review).
    - Require status checks to pass before merging:
      - `SentraGuard CI` (Python 3.11, 3.14, and Playwright E2E).
@@ -138,7 +143,7 @@ To enforce supply-chain and release integrity, the following repository governan
      - `CodeQL Analysis`.
    - Require branches to be up to date before merging.
    - Block force pushes (`Allow force pushes: disabled`) and prevent branch deletion (`Allow deletions: disabled`).
-2. **Private Vulnerability Reporting**:
+2. **Private Vulnerability Reporting (Action A-19)**:
    - Enable GitHub Private Vulnerability Reporting under **Settings > Code security and analysis** if supported by the repository's plan tier (allows external security researchers to privately disclose vulnerabilities without public issues).
 
 ---
@@ -370,11 +375,13 @@ Status values: **Proposed**, **Needs Maintainer Decision**, **Needs Verification
 | A-10 | Add a test that `API_VERSION` equals the newest non-`Unreleased` `CHANGELOG.md` heading | BASE-021 | P2 | v1.2.1 | Proposed |
 | A-11 | Reconcile supported Python versions (CI matrix vs documentation) | BASE-019 | P2 | v1.2.1 | Needs Maintainer Decision |
 | A-12 | Remove unreferenced stale screenshots or reference them | BASE-018 | P3 | backlog | Proposed |
-| A-13 | Verify tag, release and tree provenance with the commands in §3 | §3 | P1 | now | Closed [X] (Verified) |
-| A-14 | Confirm branch protection / required checks and Private Vulnerability Reporting | BASE-016 | P1 | now | Closed [X] (Gaps Documented) |
-| A-15 | Run the 6 Playwright tests and the full CI on the release commit; record results | §6.4 | P1 | now | Closed [X] (Verified) |
+| A-13 | Verify tag, release and tree provenance with the commands in §3 | §3 | P1 | now | Completed [X] (Verified) |
+| A-14 | Verify live repository status for branch protection, required checks, and Private Vulnerability Reporting | BASE-016, §3.1 | P1 | now | Completed [X] (Verification Done; Gaps Confirmed) |
+| A-15 | Run the 6 Playwright tests and the full CI on the release commit; record results | §6.4 | P1 | now | Completed [X] (Verified) |
 | A-16 | Configuration subsystem, structured logging, reproducible builds, container CI, detection harness | BASE-005/010/011/014 | P1–P2 | v1.3.0 | Proposed ([roadmap](roadmap-v1.3.0.md)) |
 | A-17 | Decide support SLAs and capacity promises in `SECURITY.md` (BASE-001 severity resolved as High on 2026-11-16) | BASE-016 | P2 | policy | In Progress (BASE-001 resolved) |
+| A-18 | Configure `main` branch protection and required CI/security status check gates | BASE-016, §3.1 | P1 | repository settings | Open (Needs Maintainer Implementation) |
+| A-19 | Enable Private Vulnerability Reporting on repository (if supported by GitHub plan) | BASE-016, §3.1 | P2 | repository settings | Open (Needs Maintainer Implementation) |
 
 ---
 
@@ -456,7 +463,7 @@ Evidence column points to the section or register rows holding the supporting de
 | BASE-013 | Low | Confirmed | `Dockerfile.api`, `docs/deployment.md` | Spoofable client identity if `FORWARDED_ALLOW_IPS=*` | Document; warn (A-09) | No | v1.2.1 docs | §5.2 |
 | BASE-014 | Low | Confirmed | `app/main.py` (exception handler) | Hard to diagnose 500s; no access log | Structured logging (V13-004) | No | v1.3.0 | §5.2 [X] |
 | BASE-015 | Low | Needs Verification | `app/core/rate_limiter.py`, `requirements.redis.txt` | Redis backend unproven | Integration tests (V13-014) | No | v1.3.0 | §6.3 |
-| BASE-016 | Low | Confirmed | `.github/SECURITY.md:28,45-46` | Promises may exceed capacity | Maintainer decision (A-17) | No | policy | §8.1 |
+| BASE-016 | Low | Confirmed | `.github/SECURITY.md:28,45-46`, GitHub repository settings | Promises may exceed capacity; branch protection & PVR disabled | Maintainer decisions on SLAs (A-17) and repository settings (A-18, A-19) | No | policy / settings | §3.1, §8.1 |
 | BASE-017 | Informational | Confirmed | `tests/*`, `SECURITY.md` | Documented test-credential rule not followed | Align text or tests | No | backlog | §6.3 [X] |
 | BASE-018 | Informational | Confirmed | `docs/*.png` | Dead, stale files | Remove or reference (A-12) | No | backlog | §8.1 |
 | BASE-019 | Informational | Confirmed | `CONTRIBUTING.md`, `ci.yml`, `docs/release-checklist.md` | Unclear supported Python versions | Test or document 3.11/3.14 (A-11) | No | v1.2.1 | §6.3 |
