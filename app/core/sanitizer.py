@@ -18,7 +18,12 @@ from app.core.findings import Finding
 from app.utils.text import canonicalize
 
 
-def apply_findings(text: str, findings: Iterable[Finding]) -> str:
+def apply_findings(
+    text: str,
+    findings: Iterable[Finding],
+    *,
+    canonical: str | None = None,
+) -> str:
     """
     Replace the span of every given finding with its replacement text.
 
@@ -32,7 +37,8 @@ def apply_findings(text: str, findings: Iterable[Finding]) -> str:
     if not spans:
         return text
 
-    canonical = canonicalize(text)
+    if canonical is None:
+        canonical = canonicalize(text)
 
     merged: list[list] = []
 

@@ -21,6 +21,17 @@ from __future__ import annotations
 
 import unicodedata
 
+
+class NormalizationLimitExceeded(ValueError):
+    """Raised when normalized text length exceeds safe limits."""
+
+    def __init__(self, length: int, limit: int) -> None:
+        super().__init__(
+            f"Normalized text length ({length}) exceeds safe limit ({limit})"
+        )
+        self.length = length
+        self.limit = limit
+
 # Look-alike letters that NFKC does not unify (Cyrillic / Greek -> Latin).
 _CONFUSABLES = {
     # Cyrillic lowercase
@@ -43,16 +54,23 @@ _LEET = {
 _LEET_TABLE = str.maketrans(_LEET)
 
 
-def canonicalize(text: str) -> str:
+def canonicalize(text: str, max_chars: int | None = None) -> str:
     """
     NFKC-normalise and strip invisible "format" characters (category Cf):
     zero-width spaces/joiners, soft hyphens, BOM, bidi controls and the
     Unicode "tag" block sometimes used to smuggle hidden instructions.
     NFKC also turns non-breaking and other exotic spaces into plain spaces.
+
+    If `max_chars` is provided and the normalized text exceeds this limit,
+    raises NormalizationLimitExceeded to protect downstream regexes and
+    sanitizers from excessive CPU/memory consumption.
     """
 
-    text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    norm = unicodedata.normalize("NFKC", text)
+    if max_chars is not None and len(norm) > max_chars:
+        raise NormalizationLimitExceeded(len(norm), max_chars)
+
+    return "".join(ch for ch in norm if unicodedata.category(ch) != "Cf")
 
 
 def fold_confusables(canonical: str) -> str:

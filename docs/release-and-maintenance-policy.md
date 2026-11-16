@@ -92,14 +92,14 @@ Releases occur only when at least one *user-affecting, validated* change is read
 
 Ship only items that are implemented and verified; drop any that are not ready. See the [audit register](post-release-audit-v1.2.0.md#9-prioritized-remediation-register).
 
-| Include | Source |
-|---|---|
-| Bounded-prefix scanning of oversized base64 tokens (High severity bypass fix) | A-01 / BASE-001 |
-| Post-normalization length cap | A-02 / BASE-002 |
-| Documentation corrections, revised release checklist and runbook | A-03…A-05 / BASE-003…006 |
-| CodeQL Action v4; pinned CI tools; Bandit scope | A-06, A-07 |
-| Compose log rotation; Uvicorn proxy-trust documentation | A-08, A-09 |
-| Test tying `API_VERSION` to the changelog | A-10 |
+| Include | Source | Status |
+|---|---|---|
+| Bounded sliding-window scanning of oversized base64 tokens (High severity bypass fix) | A-01 / BASE-001 | Implemented & verified (tests/test_base64_hardening.py) |
+| Post-normalization length cap & pipeline canonical reuse (un-cached) | A-02 / BASE-002 | Implemented & verified (tests/test_normalization_hardening.py) |
+| Documentation corrections, revised release checklist and runbook | A-03…A-05 / BASE-003…006 | Prepared / PR #49 |
+| CodeQL Action v4; pinned CI tools; Bandit scope | A-06, A-07 | Planned |
+| Compose log rotation; Uvicorn proxy-trust documentation | A-08, A-09 | Planned |
+| Test tying `API_VERSION` to the changelog | A-10 | Planned |
 
 **Not** v1.2.1: structured logging, configuration subsystem, lockfiles, container CI, the detection harness (v1.3.0).
 

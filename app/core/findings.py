@@ -92,6 +92,10 @@ class ScanBudget:
     def exhausted(self) -> bool:
         return self._exhausted
 
+    def mark_exhausted(self) -> None:
+        """Explicitly latch the budget as exhausted (e.g. when scan limits are hit)."""
+        self._exhausted = True
+
     def reserve(self) -> bool:
         """Claim one finding. Returns False (and latches) when none is left."""
         if self._exhausted:
