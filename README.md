@@ -298,6 +298,10 @@ For comprehensive operational and engineering documentation, consult:
 - [**Testing Guide**](docs/testing.md): Unit tests, coverage reporting, Playwright E2E testing, and CI matrix reproduction.
 - [**Troubleshooting Guide**](docs/troubleshooting.md): Diagnostics and resolutions for common runtime, dependency, and CI errors.
 - [**Release Readiness Checklist**](docs/release-checklist.md): Pre-release verification gates and auditing procedures.
+- [**Release Baseline (v1.2.0)**](docs/release-baseline-v1.2.0.md): The stable baseline, its architecture, and the compatibility contract for v1.2.x.
+- [**Roadmap (v1.3.0)**](docs/roadmap-v1.3.0.md): Proposed upgrade plan, scope tiers, and milestones.
+- [**Release & Maintenance Policy**](docs/release-and-maintenance-policy.md): Semantic versioning, patch releases, security hotfixes, and support lifecycle.
+- [**Post-Release Audit (v1.2.0)**](docs/post-release-audit-v1.2.0.md): Verification findings and the remediation register.
 - [**Security Policy**](.github/SECURITY.md): Vulnerability reporting, SLA disclosure, and automated security architecture.
 - [**Changelog**](CHANGELOG.md): Historical versions, release notes, and breaking changes.
 
