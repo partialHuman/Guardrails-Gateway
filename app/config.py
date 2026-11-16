@@ -118,6 +118,19 @@ MAX_CONTEXT_DOCS = _int_env("GUARDRAILS_MAX_CONTEXT_DOCS", 20, minimum=1)
 
 MAX_DOC_CHARS = _int_env("GUARDRAILS_MAX_DOC_CHARS", 50_000, minimum=1)
 
+# Post-normalization limits (protect against Unicode normalization amplification).
+MAX_NORMALIZED_PROMPT_CHARS = _int_env(
+    "GUARDRAILS_MAX_NORMALIZED_PROMPT_CHARS", 40_000, minimum=1
+)
+
+MAX_NORMALIZED_DOC_CHARS = _int_env(
+    "GUARDRAILS_MAX_NORMALIZED_DOC_CHARS", 100_000, minimum=1
+)
+
+MAX_NORMALIZED_REQUEST_CHARS = _int_env(
+    "GUARDRAILS_MAX_NORMALIZED_REQUEST_CHARS", 500_000, minimum=1
+)
+
 # Maximum raw HTTP request-body size in bytes.
 # Requests exceeding this limit are rejected with HTTP 413 before the body is
 # fully buffered, preventing unbounded memory consumption.

@@ -134,7 +134,7 @@ def test_base64_size_boundary_valid_token_decodes():
     assert any(f.rule_id == "encoded:override_instructions" for f in findings)
 
 
-def test_base64_oversized_candidate_rejected_before_decoding(monkeypatch):
+def test_base64_oversized_candidate_detected_cannot_be_evaded_by_padding():
     from app.core.detectors import MAX_BASE64_TOKEN_CHARS, _decode_base64
 
     # 4005 bytes encodes to 5340 base64 chars (> MAX_BASE64_TOKEN_CHARS 5336)
@@ -142,23 +142,13 @@ def test_base64_oversized_candidate_rejected_before_decoding(monkeypatch):
     oversized_token = base64.b64encode(payload).decode("ascii")
     assert len(oversized_token) > MAX_BASE64_TOKEN_CHARS
 
-    # Instrument base64.b64decode to prove it is NEVER called for oversized tokens
-    b64decode_calls = []
-    original_b64decode = base64.b64decode
+    # Calling unchunked _decode_base64 directly rejects raw tokens > MAX_BASE64_TOKEN_CHARS
+    assert _decode_base64(oversized_token) is None
 
-    def spy_b64decode(*args, **kwargs):
-        b64decode_calls.append(args)
-        return original_b64decode(*args, **kwargs)
-
-    monkeypatch.setattr(base64, "b64decode", spy_b64decode)
-
-    result = _decode_base64(oversized_token)
-    assert result is None
-    assert len(b64decode_calls) == 0
-
+    # But the detector pipeline chunks and inspects oversized tokens:
+    # padding CANNOT evade detection!
     findings = detect_prompt_injection(f"oversized: {oversized_token}")
-    assert findings == []
-    assert len(b64decode_calls) == 0
+    assert any(f.rule_id == "encoded:override_instructions" for f in findings)
 
 
 def test_base64_invalid_and_malformed_safely_rejected():

@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from app.config import MAX_NORMALIZED_REQUEST_CHARS
 from app.core.detectors import (
     detect_pii,
     limit_finding,
@@ -29,6 +30,7 @@ from app.core.logger import logger
 from app.core.policy import (
     BLOCK_THRESHOLD,
     INCOMPLETE_SCAN_PROMPT,
+    LIMIT_RULE_ID,
     MAX_FINDINGS_PER_REQUEST,
     POLICY_VERSION,
     TRANSFORM_THRESHOLD,
@@ -137,7 +139,8 @@ def evaluate(
         # far. Hand back a placeholder that carries none of the input.
         sanitized_prompt = INCOMPLETE_SCAN_PROMPT
 
-        all_findings.append(limit_finding("prompt", quarantine=False))
+        if not any(f.rule_id == LIMIT_RULE_ID for f in all_findings):
+            all_findings.append(limit_finding("prompt", quarantine=False))
 
         modified = True
     else:
@@ -153,11 +156,15 @@ def evaluate(
 
     quarantined: list[str] = []
 
+    total_request_chars = len(prompt)
+
     for doc_id, text in docs:
 
-        if budget.exhausted:
+        if budget.exhausted or (total_request_chars + len(text) > MAX_NORMALIZED_REQUEST_CHARS):
             # Never forward a document we did not scan, and do not spend
             # any work scanning it: it is quarantined unseen.
+            budget.reserve()
+            budget._exhausted = True
             quarantined.append(doc_id)
             modified = True
             continue
@@ -168,11 +175,13 @@ def evaluate(
         )
 
         all_findings.extend(doc_findings)
+        total_request_chars += len(text)
 
         if budget.exhausted:
             # This document was cut short. Quarantine it WHOLE: its partial
             # findings are kept for reporting only, its text is dropped.
-            all_findings.append(limit_finding(doc_id, quarantine=True))
+            if not any(f.rule_id == LIMIT_RULE_ID for f in doc_findings):
+                all_findings.append(limit_finding(doc_id, quarantine=True))
             quarantined.append(doc_id)
             modified = True
             continue

@@ -37,6 +37,10 @@ import base64
 import binascii
 import re
 
+from app.config import (
+    MAX_NORMALIZED_DOC_CHARS,
+    MAX_NORMALIZED_PROMPT_CHARS,
+)
 from app.core.findings import ACTION_QUARANTINE, ACTION_REDACT, Finding, ScanBudget
 from app.core.policy import (
     ENCODED_PREFIX,
@@ -61,6 +65,7 @@ from app.utils.regex import (
     PHONE_NANP_REGEX,
 )
 from app.utils.text import (
+    NormalizationLimitExceeded,
     canonicalize,
     fold_confusables,
     fold_leet,
@@ -82,9 +87,18 @@ BASE64_PATTERN = re.compile(BASE64_REGEX)
 MAX_BASE64_CANDIDATES = 20
 MAX_DECODED_CHARS = 4000
 
-# Maximum encoded token length to inspect. In Base64, 4 chars encode 3 bytes.
-# ceil(4000 / 3) * 4 = 5336 chars decode to 4000 bytes. Tokens longer than
-# this are rejected before base64.b64decode() to bound CPU and memory.
+# Chunked / sliding-window inspection for Base64 payloads (BASE-001).
+# In Base64, 4 characters decode to 3 bytes.
+# Chunk size: 4000 characters (decodes to 3000 bytes).
+# Overlap: 268 characters (decodes to 201 bytes), preventing boundary evasion.
+# Step size: 3732 characters (aligned to multiple of 4).
+BASE64_CHUNK_SIZE = 4000
+BASE64_CHUNK_OVERLAP = 268
+BASE64_CHUNK_STEP = BASE64_CHUNK_SIZE - BASE64_CHUNK_OVERLAP  # 3732
+MAX_BASE64_CHUNKS_PER_TOKEN = 16  # Covers up to ~60,000 base64 chars (> 50k doc limit)
+MAX_BASE64_TEXT_INSPECT_CHARS = 100_000  # Total base64 chars inspected per text
+
+# Preserved for backward-compatibility with tests and external callers.
 MAX_BASE64_TOKEN_CHARS = ((MAX_DECODED_CHARS + 2) // 3) * 4
 
 # Payment-card issuer prefixes (Visa, Mastercard, Amex, Discover, JCB, Diners).
@@ -111,8 +125,7 @@ def _replacement_for(rule_id: str, scope: str) -> str:
 
 
 def _decode_base64(token: str) -> str | None:
-    """Return decoded text if the token is plausibly base64-encoded text."""
-
+    """Return decoded text if the token/chunk is plausibly base64-encoded text."""
     if len(token) > MAX_BASE64_TOKEN_CHARS:
         return None
 
@@ -121,7 +134,7 @@ def _decode_base64(token: str) -> str | None:
 
     try:
         raw = base64.b64decode(candidate, validate=True)
-        decoded = raw.decode("utf-8")
+        decoded = raw.decode("utf-8", errors="ignore")
     except (binascii.Error, UnicodeDecodeError, ValueError):
         return None
 
@@ -129,18 +142,49 @@ def _decode_base64(token: str) -> str | None:
         return None
 
     printable = sum(ch.isprintable() or ch in "\n\t" for ch in decoded)
-
     if printable / len(decoded) < 0.9:
         return None
 
     return decoded[:MAX_DECODED_CHARS]
 
 
+def _iter_base64_chunks(token: str) -> tuple[list[str], bool]:
+    """
+    Split a base64 candidate into overlapping 4-character-aligned chunks.
+    Returns (chunks, is_truncated) where is_truncated is True if the token
+    exceeded the maximum chunk inspection budget.
+    """
+    token_len = len(token)
+    if token_len <= BASE64_CHUNK_SIZE:
+        return [token], False
+
+    chunks: list[str] = []
+    start = 0
+
+    while start < token_len and len(chunks) < MAX_BASE64_CHUNKS_PER_TOKEN:
+        end = min(start + BASE64_CHUNK_SIZE, token_len)
+        if end < token_len:
+            end -= (end - start) % 4
+        chunk = token[start:end]
+        chunks.append(chunk)
+        if end >= token_len:
+            break
+        start += BASE64_CHUNK_STEP
+        start -= start % 4
+
+    is_truncated = (start < token_len) and (len(chunks) >= MAX_BASE64_CHUNKS_PER_TOKEN)
+    return chunks, is_truncated
+
+
 def _injection_view(canonical: str) -> str:
     return fold_leet(fold_confusables(canonical))
 
 
-def limit_finding(source: str, quarantine: bool) -> Finding:
+def limit_finding(
+    source: str,
+    quarantine: bool,
+    evidence: str = "Scan limit exceeded: request contains too many matches to process safely",
+) -> Finding:
     """
     Zero-width finding meaning "the request-wide finding budget was hit".
 
@@ -154,7 +198,7 @@ def limit_finding(source: str, quarantine: bool) -> Finding:
         severity=LIMIT_SEVERITY,
         start=0,
         end=0,
-        evidence="Scan limit exceeded: request contains too many matches to process safely",
+        evidence=evidence,
         source=source,
         action=ACTION_QUARANTINE if quarantine else ACTION_REDACT,
         replacement="",
@@ -184,7 +228,28 @@ def _detect_injection(
 
     tag = "prompt_injection" if scope == "prompt" else "rag_injection"
 
-    canonical = canonicalize(text)
+    max_norm_chars = (
+        MAX_NORMALIZED_PROMPT_CHARS
+        if scope == "prompt"
+        else MAX_NORMALIZED_DOC_CHARS
+    )
+
+    try:
+        canonical = canonicalize(text, max_chars=max_norm_chars)
+    except NormalizationLimitExceeded as ex:
+        if budget is not None:
+            budget._exhausted = True
+        return [
+            limit_finding(
+                source,
+                quarantine=(scope != "prompt"),
+                evidence=(
+                    f"Scan limit exceeded: normalized {scope} length "
+                    f"({ex.length}) exceeds safe limit ({ex.limit})"
+                ),
+            )
+        ]
+
     view = _injection_view(canonical)
 
     findings: list[Finding] = []
@@ -238,51 +303,97 @@ def _detect_encoded_injection(
     if budget is not None and budget.exhausted:
         return findings
 
+    total_inspected_chars = 0
+
     for index, token_match in enumerate(BASE64_PATTERN.finditer(canonical)):
 
         if index >= MAX_BASE64_CANDIDATES:
             break
 
-        decoded = _decode_base64(token_match.group())
+        token = token_match.group()
+        token_len = len(token)
 
-        if decoded is None:
-            continue
-
-        decoded_view = _injection_view(canonicalize(decoded))
-
-        for rule in INJECTION_RULES:
-
-            if scope not in rule.scopes or rule.id == "role_marker":
-                continue
-
-            inner = rule.pattern.search(decoded_view)
-
-            if not inner:
-                continue
-
-            if budget is not None and not budget.reserve():
-                return findings  # incomplete scan: stop decoding further tokens
-
+        if total_inspected_chars + token_len > MAX_BASE64_TEXT_INSPECT_CHARS:
+            # Text exceeds total base64 inspection budget: fail closed
+            if budget is not None:
+                budget._exhausted = True
             findings.append(
-                Finding(
-                    rule_id=f"{ENCODED_PREFIX}{rule.id}",
-                    tag=tag,
-                    severity=rule.severity,
-                    start=token_match.start(),
-                    end=token_match.end(),
-                    evidence=(
-                        "Base64-encoded payload matched: "
-                        f"'{_clip(decoded_view[inner.start():inner.end()])}'"
-                    ),
-                    source=source,
-                    action=(
-                        ACTION_REDACT
-                        if scope == "prompt"
-                        else rule.doc_action
-                    ),
-                    replacement=_replacement_for(rule.id, scope),
+                limit_finding(
+                    source,
+                    quarantine=(scope != "prompt"),
+                    evidence="Scan limit exceeded: total encoded payload length exceeds inspection budget",
                 )
             )
+            return findings
+
+        chunks, is_truncated = _iter_base64_chunks(token)
+        total_inspected_chars += token_len
+
+        seen_rules_for_token: set[str] = set()
+
+        for chunk in chunks:
+            decoded = _decode_base64(chunk)
+
+            if decoded is None:
+                continue
+
+            try:
+                decoded_canonical = canonicalize(decoded)
+            except NormalizationLimitExceeded:
+                continue
+
+            decoded_view = _injection_view(decoded_canonical)
+
+            for rule in INJECTION_RULES:
+
+                if scope not in rule.scopes or rule.id == "role_marker":
+                    continue
+
+                if rule.id in seen_rules_for_token:
+                    continue
+
+                inner = rule.pattern.search(decoded_view)
+
+                if not inner:
+                    continue
+
+                if budget is not None and not budget.reserve():
+                    return findings  # incomplete scan: stop decoding further tokens
+
+                seen_rules_for_token.add(rule.id)
+                findings.append(
+                    Finding(
+                        rule_id=f"{ENCODED_PREFIX}{rule.id}",
+                        tag=tag,
+                        severity=rule.severity,
+                        start=token_match.start(),
+                        end=token_match.end(),
+                        evidence=(
+                            "Base64-encoded payload matched: "
+                            f"'{_clip(decoded_view[inner.start():inner.end()])}'"
+                        ),
+                        source=source,
+                        action=(
+                            ACTION_REDACT
+                            if scope == "prompt"
+                            else rule.doc_action
+                        ),
+                        replacement=_replacement_for(rule.id, scope),
+                    )
+                )
+
+        if is_truncated and not seen_rules_for_token:
+            # Token exceeded chunk budget without matching: fail closed
+            if budget is not None:
+                budget._exhausted = True
+            findings.append(
+                limit_finding(
+                    source,
+                    quarantine=(scope != "prompt"),
+                    evidence="Scan limit exceeded: Base64 token exceeds inspection budget",
+                )
+            )
+            return findings
 
     return findings
 
@@ -446,7 +557,27 @@ def detect_pii(
     if budget is not None and budget.exhausted:
         return []
 
-    canonical = canonicalize(text)
+    max_norm_chars = (
+        MAX_NORMALIZED_PROMPT_CHARS
+        if source == "prompt"
+        else MAX_NORMALIZED_DOC_CHARS
+    )
+
+    try:
+        canonical = canonicalize(text, max_chars=max_norm_chars)
+    except NormalizationLimitExceeded as ex:
+        if budget is not None:
+            budget._exhausted = True
+        return [
+            limit_finding(
+                source,
+                quarantine=(source != "prompt"),
+                evidence=(
+                    f"Scan limit exceeded: normalized text length "
+                    f"({ex.length}) exceeds safe limit ({ex.limit})"
+                ),
+            )
+        ]
 
     claimed = bytearray(len(canonical))
 
