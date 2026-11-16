@@ -12,7 +12,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from app.config import MAX_NORMALIZED_REQUEST_CHARS
+from app.config import (
+    MAX_NORMALIZED_DOC_CHARS,
+    MAX_NORMALIZED_PROMPT_CHARS,
+    MAX_NORMALIZED_REQUEST_CHARS,
+)
 from app.core.detectors import (
     detect_pii,
     limit_finding,
@@ -42,6 +46,10 @@ from app.schemas import (
     AnalyzeResponse,
     Reason,
     SanitizedDocument,
+)
+from app.utils.text import (
+    NormalizationLimitExceeded,
+    canonicalize,
 )
 
 
@@ -74,6 +82,41 @@ class Evaluation:
     # False when the finding budget ran out: the prompt and/or documents were
     # NOT fully scanned. Such a result is always BLOCK (see evaluate()).
     scan_complete: bool = True
+
+
+def _scan_prompt(text: str, budget: ScanBudget, canonical: str) -> list[Finding]:
+    try:
+        inj = detect_prompt_injection(text, "prompt", budget=budget, canonical=canonical)
+    except TypeError:
+        inj = detect_prompt_injection(text, "prompt", budget=budget)
+
+    try:
+        pii = detect_pii(text, "prompt", budget=budget, canonical=canonical)
+    except TypeError:
+        pii = detect_pii(text, "prompt", budget=budget)
+
+    return inj + pii
+
+
+def _scan_doc(text: str, doc_id: str, budget: ScanBudget, canonical: str) -> list[Finding]:
+    try:
+        inj = detect_rag_injection(text, doc_id, budget=budget, canonical=canonical)
+    except TypeError:
+        inj = detect_rag_injection(text, doc_id, budget=budget)
+
+    try:
+        pii = detect_pii(text, doc_id, budget=budget, canonical=canonical)
+    except TypeError:
+        pii = detect_pii(text, doc_id, budget=budget)
+
+    return inj + pii
+
+
+def _apply_sanitizer(text: str, findings: Sequence[Finding], canonical: str) -> str:
+    try:
+        return apply_findings(text, findings, canonical=canonical)
+    except TypeError:
+        return apply_findings(text, findings)
 
 
 def evaluate(
@@ -125,28 +168,65 @@ def evaluate(
 
     budget = ScanBudget(MAX_FINDINGS_PER_REQUEST)
 
-    # PII detection is a no-op when injection detection already used the
-    # budget up (a spent budget makes a detector return immediately).
-    prompt_findings = (
-        detect_prompt_injection(prompt, "prompt", budget=budget)
-        + detect_pii(prompt, "prompt", budget=budget)
-    )
+    try:
+        canonical_prompt = canonicalize(prompt, max_chars=MAX_NORMALIZED_PROMPT_CHARS)
+        total_normalized_chars = len(canonical_prompt)
+        prompt_failed_norm = False
+    except NormalizationLimitExceeded as ex:
+        canonical_prompt = None
+        prompt_failed_norm = True
+        norm_ex_prompt = ex
+        total_normalized_chars = MAX_NORMALIZED_PROMPT_CHARS + 1
 
-    all_findings = list(prompt_findings)
-
-    if budget.exhausted:
-        # Incomplete prompt scan: do NOT redact-and-trust what was seen so
-        # far. Hand back a placeholder that carries none of the input.
+    if prompt_failed_norm:
+        budget.reserve()
+        budget.mark_exhausted()
+        prompt_findings = [
+            limit_finding(
+                "prompt",
+                quarantine=False,
+                evidence=(
+                    f"Scan limit exceeded: normalized prompt length "
+                    f"({norm_ex_prompt.length}) exceeds safe limit ({norm_ex_prompt.limit})"
+                ),
+            )
+        ]
+        all_findings = list(prompt_findings)
         sanitized_prompt = INCOMPLETE_SCAN_PROMPT
-
-        if not any(f.rule_id == LIMIT_RULE_ID for f in all_findings):
-            all_findings.append(limit_finding("prompt", quarantine=False))
-
+        modified = True
+    elif total_normalized_chars > MAX_NORMALIZED_REQUEST_CHARS:
+        budget.reserve()
+        budget.mark_exhausted()
+        prompt_findings = [
+            limit_finding(
+                "prompt",
+                quarantine=False,
+                evidence="Scan limit exceeded: cumulative normalized request length exceeds safe limit",
+            )
+        ]
+        all_findings = list(prompt_findings)
+        sanitized_prompt = INCOMPLETE_SCAN_PROMPT
         modified = True
     else:
-        sanitized_prompt = apply_findings(prompt, prompt_findings)
+        # PII detection is a no-op when injection detection already used the
+        # budget up (a spent budget makes a detector return immediately).
+        prompt_findings = _scan_prompt(prompt, budget, canonical_prompt)
 
-        modified = bool(prompt_findings)
+        all_findings = list(prompt_findings)
+
+        if budget.exhausted:
+            # Incomplete prompt scan: do NOT redact-and-trust what was seen so
+            # far. Hand back a placeholder that carries none of the input.
+            sanitized_prompt = INCOMPLETE_SCAN_PROMPT
+
+            if not any(f.rule_id == LIMIT_RULE_ID for f in all_findings):
+                all_findings.append(limit_finding("prompt", quarantine=False))
+
+            modified = True
+        else:
+            sanitized_prompt = _apply_sanitizer(prompt, prompt_findings, canonical_prompt)
+
+            modified = bool(prompt_findings)
 
     # -----------------------------------------------------
     # Context documents
@@ -156,26 +236,56 @@ def evaluate(
 
     quarantined: list[str] = []
 
-    total_request_chars = len(prompt)
-
     for doc_id, text in docs:
 
-        if budget.exhausted or (total_request_chars + len(text) > MAX_NORMALIZED_REQUEST_CHARS):
+        if budget.exhausted:
             # Never forward a document we did not scan, and do not spend
             # any work scanning it: it is quarantined unseen.
-            budget.reserve()
-            budget._exhausted = True
             quarantined.append(doc_id)
             modified = True
             continue
 
-        doc_findings = (
-            detect_rag_injection(text, doc_id, budget=budget)
-            + detect_pii(text, doc_id, budget=budget)
-        )
+        try:
+            canonical_doc = canonicalize(text, max_chars=MAX_NORMALIZED_DOC_CHARS)
+        except NormalizationLimitExceeded as ex:
+            budget.reserve()
+            budget.mark_exhausted()
+            all_findings.append(
+                limit_finding(
+                    doc_id,
+                    quarantine=True,
+                    evidence=(
+                        f"Scan limit exceeded: normalized document length "
+                        f"({ex.length}) exceeds safe limit ({ex.limit})"
+                    ),
+                )
+            )
+            quarantined.append(doc_id)
+            modified = True
+            continue
+
+        doc_norm_len = len(canonical_doc)
+
+        if total_normalized_chars + doc_norm_len > MAX_NORMALIZED_REQUEST_CHARS:
+            # Never forward a document we did not scan, and do not spend
+            # any work scanning it: it is quarantined unseen.
+            budget.reserve()
+            budget.mark_exhausted()
+            all_findings.append(
+                limit_finding(
+                    doc_id,
+                    quarantine=True,
+                    evidence="Scan limit exceeded: cumulative normalized request length exceeds safe limit",
+                )
+            )
+            quarantined.append(doc_id)
+            modified = True
+            continue
+
+        doc_findings = _scan_doc(text, doc_id, budget, canonical_doc)
 
         all_findings.extend(doc_findings)
-        total_request_chars += len(text)
+        total_normalized_chars += doc_norm_len
 
         if budget.exhausted:
             # This document was cut short. Quarantine it WHOLE: its partial
@@ -196,7 +306,7 @@ def evaluate(
         if redactions:
             modified = True
 
-        sanitized_docs.append((doc_id, apply_findings(text, redactions)))
+        sanitized_docs.append((doc_id, _apply_sanitizer(text, redactions, canonical_doc)))
 
     # -----------------------------------------------------
     # Score + decision

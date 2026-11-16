@@ -214,6 +214,8 @@ def _detect_injection(
     scope: str,
     source: str,
     budget: ScanBudget | None = None,
+    *,
+    canonical: str | None = None,
 ) -> list[Finding]:
     """
     Run every injection rule that applies to `scope`
@@ -234,21 +236,22 @@ def _detect_injection(
         else MAX_NORMALIZED_DOC_CHARS
     )
 
-    try:
-        canonical = canonicalize(text, max_chars=max_norm_chars)
-    except NormalizationLimitExceeded as ex:
-        if budget is not None:
-            budget._exhausted = True
-        return [
-            limit_finding(
-                source,
-                quarantine=(scope != "prompt"),
-                evidence=(
-                    f"Scan limit exceeded: normalized {scope} length "
-                    f"({ex.length}) exceeds safe limit ({ex.limit})"
-                ),
-            )
-        ]
+    if canonical is None:
+        try:
+            canonical = canonicalize(text, max_chars=max_norm_chars)
+        except NormalizationLimitExceeded as ex:
+            if budget is not None:
+                budget.mark_exhausted()
+            return [
+                limit_finding(
+                    source,
+                    quarantine=(scope != "prompt"),
+                    evidence=(
+                        f"Scan limit exceeded: normalized {scope} length "
+                        f"({ex.length}) exceeds safe limit ({ex.limit})"
+                    ),
+                )
+            ]
 
     view = _injection_view(canonical)
 
@@ -308,7 +311,17 @@ def _detect_encoded_injection(
     for index, token_match in enumerate(BASE64_PATTERN.finditer(canonical)):
 
         if index >= MAX_BASE64_CANDIDATES:
-            break
+            if budget is not None:
+                budget.mark_exhausted()
+            if not any(f.rule_id == LIMIT_RULE_ID for f in findings):
+                findings.append(
+                    limit_finding(
+                        source,
+                        quarantine=(scope != "prompt"),
+                        evidence="Scan limit exceeded: request contains too many Base64 candidate tokens to process safely",
+                    )
+                )
+            return findings
 
         token = token_match.group()
         token_len = len(token)
@@ -316,14 +329,15 @@ def _detect_encoded_injection(
         if total_inspected_chars + token_len > MAX_BASE64_TEXT_INSPECT_CHARS:
             # Text exceeds total base64 inspection budget: fail closed
             if budget is not None:
-                budget._exhausted = True
-            findings.append(
-                limit_finding(
-                    source,
-                    quarantine=(scope != "prompt"),
-                    evidence="Scan limit exceeded: total encoded payload length exceeds inspection budget",
+                budget.mark_exhausted()
+            if not any(f.rule_id == LIMIT_RULE_ID for f in findings):
+                findings.append(
+                    limit_finding(
+                        source,
+                        quarantine=(scope != "prompt"),
+                        evidence="Scan limit exceeded: total encoded payload length exceeds inspection budget",
+                    )
                 )
-            )
             return findings
 
         chunks, is_truncated = _iter_base64_chunks(token)
@@ -385,14 +399,15 @@ def _detect_encoded_injection(
         if is_truncated and not seen_rules_for_token:
             # Token exceeded chunk budget without matching: fail closed
             if budget is not None:
-                budget._exhausted = True
-            findings.append(
-                limit_finding(
-                    source,
-                    quarantine=(scope != "prompt"),
-                    evidence="Scan limit exceeded: Base64 token exceeds inspection budget",
+                budget.mark_exhausted()
+            if not any(f.rule_id == LIMIT_RULE_ID for f in findings):
+                findings.append(
+                    limit_finding(
+                        source,
+                        quarantine=(scope != "prompt"),
+                        evidence="Scan limit exceeded: Base64 token exceeds inspection budget",
+                    )
                 )
-            )
             return findings
 
     return findings
@@ -403,6 +418,7 @@ def detect_prompt_injection(
     source: str = "prompt",
     *,
     budget: ScanBudget | None = None,
+    canonical: str | None = None,
 ) -> list[Finding]:
     """
     Detect prompt injection attempts in a user prompt.
@@ -410,7 +426,7 @@ def detect_prompt_injection(
     Pass ``budget`` to bound the scan; check ``budget.exhausted`` afterwards.
     """
 
-    return _detect_injection(text, "prompt", source, budget)
+    return _detect_injection(text, "prompt", source, budget, canonical=canonical)
 
 
 def detect_rag_injection(
@@ -418,6 +434,7 @@ def detect_rag_injection(
     source: str = "document",
     *,
     budget: ScanBudget | None = None,
+    canonical: str | None = None,
 ) -> list[Finding]:
     """
     Detect malicious instructions inside retrieved documents.
@@ -425,7 +442,7 @@ def detect_rag_injection(
     Pass ``budget`` to bound the scan; check ``budget.exhausted`` afterwards.
     """
 
-    return _detect_injection(text, "document", source, budget)
+    return _detect_injection(text, "document", source, budget, canonical=canonical)
 
 
 # ==========================================================
@@ -537,6 +554,7 @@ def detect_pii(
     source: str = "prompt",
     *,
     budget: ScanBudget | None = None,
+    canonical: str | None = None,
 ) -> list[Finding]:
     """
     Detect personally identifiable information.
@@ -563,21 +581,22 @@ def detect_pii(
         else MAX_NORMALIZED_DOC_CHARS
     )
 
-    try:
-        canonical = canonicalize(text, max_chars=max_norm_chars)
-    except NormalizationLimitExceeded as ex:
-        if budget is not None:
-            budget._exhausted = True
-        return [
-            limit_finding(
-                source,
-                quarantine=(source != "prompt"),
-                evidence=(
-                    f"Scan limit exceeded: normalized text length "
-                    f"({ex.length}) exceeds safe limit ({ex.limit})"
-                ),
-            )
-        ]
+    if canonical is None:
+        try:
+            canonical = canonicalize(text, max_chars=max_norm_chars)
+        except NormalizationLimitExceeded as ex:
+            if budget is not None:
+                budget.mark_exhausted()
+            return [
+                limit_finding(
+                    source,
+                    quarantine=(source != "prompt"),
+                    evidence=(
+                        f"Scan limit exceeded: normalized text length "
+                        f"({ex.length}) exceeds safe limit ({ex.limit})"
+                    ),
+                )
+            ]
 
     claimed = bytearray(len(canonical))
 

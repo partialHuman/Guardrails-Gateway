@@ -19,7 +19,6 @@ text. That is what lets the sanitizer redact the right span.
 
 from __future__ import annotations
 
-import functools
 import unicodedata
 
 
@@ -55,7 +54,6 @@ _LEET = {
 _LEET_TABLE = str.maketrans(_LEET)
 
 
-@functools.lru_cache(maxsize=128)
 def canonicalize(text: str, max_chars: int | None = None) -> str:
     """
     NFKC-normalise and strip invisible "format" characters (category Cf):

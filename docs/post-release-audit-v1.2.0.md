@@ -183,8 +183,8 @@ Severity scale: Critical / High / Medium / Low / Informational. Confidence: **Co
 
 | ID | Severity | Confidence | Finding | Blocks v1.2.0 use? | Timing |
 |---|---|---|---|---|---|
-| **BASE-001** | High | Confirmed [X] | Oversized base64 token bypasses encoded-payload detection (reclassified per SECURITY.md) | No | v1.2.1 (Immediate) |
-| **BASE-002** | Medium | Confirmed [X] | Scan length after normalization is unbounded relative to character limits | No | v1.2.1 (bounded) → v1.3.0 |
+| **BASE-001** | High | Confirmed [X] | Oversized base64 token bypasses encoded-payload detection (reclassified per SECURITY.md) | No | v1.2.1 (Remediated; fix/v1.2.1-detection-hardening) |
+| **BASE-002** | Medium | Confirmed [X] | Scan length after normalization is unbounded relative to character limits | No | v1.2.1 (Remediated; fix/v1.2.1-detection-hardening) |
 | **BASE-007** | Low | Confirmed [V] | UI password gate has no cross-session attempt limit | No | v1.3.0 |
 | **BASE-013** | Low | Confirmed [V] | Uvicorn's own forwarded-header trust is undocumented | No | v1.2.1 docs |
 | **BASE-014** | Low | Confirmed [X] | 500s are logged by exception type only; no per-request access log | No | v1.3.0 |
@@ -365,8 +365,8 @@ Status values: **Proposed**, **Needs Maintainer Decision**, **Needs Verification
 
 | ID | Action | Findings | Priority | Release | Status |
 |---|---|---|---|---|---|
-| A-01 | Scan a bounded prefix of oversized base64 tokens and/or flag them; prove benign padding cannot bypass detection with regression tests | BASE-001 | P1 (High) | v1.2.1 | Immediate Priority |
-| A-02 | Cap total post-normalization length per request; fail closed; add tests with `U+FDFA` | BASE-002 | P1 | v1.2.1 | Proposed |
+| A-01 | Scan a bounded prefix of oversized base64 tokens and/or flag them; prove benign padding cannot bypass detection with regression tests | BASE-001 | P1 (High) | v1.2.1 | Remediated (fix/v1.2.1-detection-hardening; 20 tests; SEC-001 candidate cap closed) |
+| A-02 | Cap total post-normalization length per request; fail closed; add tests with `U+FDFA` | BASE-002 | P1 | v1.2.1 | Remediated (fix/v1.2.1-detection-hardening; 29 tests; SEC-002 LRU cache removed, SEC-003 cumulative budget enforced) |
 | A-03 | Correct security-header claims in `SECURITY.md`, `docs/api.md`, and the notes (or implement them — see V13-005) | BASE-003, D-01…06 | P1 | v1.2.1 | Needs Maintainer Decision |
 | A-04 | Correct the remaining discrepancies D-07…D-24 | BASE-004, 005, 020 | P1 | v1.2.1 | Proposed |
 | A-05 | Fix the operations runbook and release checklist (this audit supplies a revised checklist) | BASE-006 | P1 | v1.2.1 | Proposed |
@@ -442,7 +442,7 @@ All commands ran on Linux, Python 3.12.3, against the extracted ZIP content (or 
 | Unbounded limiter memory / IPv6 rotation | Fixed | [V] bounded table; `/64` keys |
 | UI dependencies not audited | Fixed | [V] `pip-audit` step for `requirements.ui.txt` |
 | TruffleHog push-event configuration (PR #39) | Consistent with documented action behavior | [N] confirm in a live Actions log |
-| **Post-normalization scan length** | **Open** | BASE-002 |
+| **Post-normalization scan length** | **Remediated** | BASE-002 (v1.2.1 candidate in fix/v1.2.1-detection-hardening) |
 
 ## Appendix C — Consolidated finding register
 
@@ -450,8 +450,8 @@ Evidence column points to the section or register rows holding the supporting de
 
 | ID | Severity | Confidence | Affected file / module | Impact | Recommended action | Blocks? | Timing | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| BASE-001 | High | Confirmed | `app/core/detectors.py` (`MAX_BASE64_TOKEN_CHARS`), `tests/test_prompt_injection.py` | Encoded injection hidden by padding; bypasses detection under realistic inputs | Scan bounded prefix / chunk sliding-window (A-01); implemented in `fix/v1.2.1-detection-hardening` with 14 tests in `tests/test_base64_hardening.py` | No | v1.2.1 (Implemented & Verified) | §5.2 [X] |
-| BASE-002 | Medium | Confirmed | `app/utils/text.py`, `app/core/analyzer.py`, `app/config.py` | 7.1 s / +58 MB per request; `allow` | Post-normalization length cap, fail closed (A-02); implemented in `fix/v1.2.1-detection-hardening` with 18 tests in `tests/test_normalization_hardening.py` | No | v1.2.1 (Implemented & Verified) | §5.2 [X] |
+| BASE-001 | High | Confirmed | `app/core/detectors.py` (`MAX_BASE64_TOKEN_CHARS`), `tests/test_prompt_injection.py` | Encoded injection hidden by padding; bypasses detection under realistic inputs | Scan bounded prefix / chunk sliding-window (A-01); implemented in `fix/v1.2.1-detection-hardening` with 20 tests in `tests/test_base64_hardening.py` (SEC-001 candidate cap closed) | No | v1.2.1 (Remediated & Verified) | §5.2 [X] |
+| BASE-002 | Medium | Confirmed | `app/utils/text.py`, `app/core/analyzer.py`, `app/config.py` | 7.1 s / +58 MB per request; `allow` | Post-normalization length cap, fail closed (A-02); implemented in `fix/v1.2.1-detection-hardening` with 29 tests in `tests/test_normalization_hardening.py` (SEC-002 cache removed, SEC-003 cumulative budget enforced) | No | v1.2.1 (Remediated & Verified) | §5.2 [X] |
 | BASE-003 | Medium | Confirmed | `.github/SECURITY.md`, `docs/api.md`, `CHANGELOG.md` vs `app/main.py` | False assurance about response headers | Correct docs or implement (A-03) | No | v1.2.1 docs | §8, D-01…06 [X] |
 | BASE-004 | Medium | Confirmed | `.github/SECURITY.md`, `CHANGELOG.md`, `CONTRIBUTING.md` | Public claims about absent controls | Correct each row (A-04) | No | v1.2.1 docs | §8, D-07…21, D-24 |
 | BASE-005 | Medium | Confirmed | `README.md:271`, `docs/deployment.md:269`, `app/config.py` | Operators set variables that do nothing | Correct docs; unknown-variable warning (V13-002) | No | v1.2.1 docs; v1.3.0 | §8, D-22/23 |
