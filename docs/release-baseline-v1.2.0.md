@@ -220,8 +220,8 @@ Authoritative list with evidence: the [audit](post-release-audit-v1.2.0.md). The
 | # | Limitation | Reference |
 |---|---|---|
 | L1 | **Regex CPU time is not bounded.** The finding budget bounds findings and per-match work, not scanning of text that has no matches. Python's `re` cannot be interrupted. ≈ 1.0–1.3 s CPU per maximum-size request [X] | audit §10 |
-| L2 | **Scan length after normalization is unbounded** in v1.2.0 baseline (NFKC expansion up to 18×: 878 KiB costs 7.1 s and +58 MB and is allowed; remediated in v1.2.1) | BASE-002 |
-| L3 | **Oversized base64 tokens (> 5,336 chars) are not decoded** in v1.2.0 baseline (reclassified High severity per SECURITY.md; remediated in v1.2.1) | BASE-001 |
+| L2 | **Scan length after normalization is unbounded** in v1.2.0 baseline (NFKC expansion up to 18×: 878 KiB costs 7.1 s and +58 MB and is allowed; remediated in main via PR #50, commit 1d70e75; v1.2.1 unreleased) | BASE-002 |
+| L3 | **Oversized base64 tokens (> 5,336 chars) are not decoded** in v1.2.0 baseline (reclassified High severity per SECURITY.md; remediated in main via PR #50, commit 1d70e75; v1.2.1 unreleased) | BASE-001 |
 | L4 | **Detection is pattern-based**; recall on paraphrase, other languages, and unlisted encodings is low and unmeasured | audit §10 |
 | L5 | **One shared API key**: no rotation window, revocation or attribution | roadmap V13-006 |
 | L6 | **Per-process rate limiter**; Redis backend untested against a real server | BASE-015 |

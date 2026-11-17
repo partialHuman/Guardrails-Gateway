@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Merged Security Hardening (PR #50 — Commit `1d70e75ef8443869c02c3f160dcd85517514d143`)
+
+- **PR #50 Merged into main**: Landed the comprehensive v1.2.1 security hardening suite addressing BASE-001, BASE-002, SEC-001, SEC-002, and SEC-003. Verified by post-merge CI runs on `main` (SentraGuard CI run #43933952373, SentraGuard Security run #43933952792, CodeQL Analysis run #43933952334). v1.2.1 remains an unreleased candidate pending formal release-readiness review.
+
 ### Security
 
 - **Remediated BASE-001 (High Severity) — Oversized Base64 Detection Bypass**: Replaced the previous truncation skip in `app/core/detectors.py` (which silently ignored base64 tokens exceeding 5,336 characters) with a bounded sliding-window chunking engine (`BASE64_CHUNK_SIZE = 4000`, `BASE64_CHUNK_OVERLAP = 268`, `BASE64_CHUNK_STEP = 3732`, `MAX_BASE64_CHUNKS_PER_TOKEN = 16`, `MAX_BASE64_TEXT_INSPECT_CHARS = 100_000`). Bounded inspection prevents benign padding from evading encoded prompt injection detection across arbitrary payload sizes and chunk boundaries, while strictly bounding CPU and memory consumption. When tokens exceed chunk budgets or global inspection budgets, the detector fails closed (`scan_limit_exceeded`, `Decision.BLOCK`). Additionally resolved pre-PR review finding **SEC-001** by enforcing fail-closed scan truncation when Base64 candidate tokens reach `MAX_BASE64_CANDIDATES = 20`, preventing attackers from evading detection by prepending 20 benign tokens before an encoded exploit. Verified by 20 regression and adversarial tests in `tests/test_base64_hardening.py` and updated `tests/test_prompt_injection.py`.
