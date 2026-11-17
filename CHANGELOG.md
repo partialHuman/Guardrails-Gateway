@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-### Merged Security Hardening (PR #50 — Commit `1d70e75ef8443869c02c3f160dcd85517514d143`)
+---
 
-- **PR #50 Merged into main**: Landed the comprehensive v1.2.1 security hardening suite addressing BASE-001, BASE-002, SEC-001, SEC-002, and SEC-003. Verified by post-merge CI runs on `main` (SentraGuard CI run #43933952373, SentraGuard Security run #43933952792, CodeQL Analysis run #43933952334). v1.2.1 remains an unreleased candidate pending formal release-readiness review.
+## 1.2.1 - 2026-11-17
 
 ### Security
 
@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `docs/post-release-audit-v1.2.0.md` (post-release audit, discrepancy register, and remediation register with maintainer reclassification of BASE-001 as High severity per `.github/SECURITY.md`, completed A-14 governance verification, and open tracking actions A-18/A-19 for repository settings), `docs/release-baseline-v1.2.0.md` (stable baseline and compatibility contract), `docs/roadmap-v1.3.0.md` (proposed v1.3.0 plan), and `docs/release-and-maintenance-policy.md` (semantic versioning, patch-release workflow, security hotfix procedure, tag policy, support lifecycle).
 - Extended and corrected `docs/release-checklist.md`: the container gate now starts the stack before probing, the documented health payload is `{"status":"ok"}`, tagging targets an explicit commit and no longer calls an annotated tag "signed", rollback no longer instructs retracting a published tag, and post-release verification and a patch-release addendum were added.
 - Linked the new documents from the README documentation index.
+- Documented PR #50 merge (`1d70e75ef8443869c02c3f160dcd85517514d143`) and PR #51 merge (`7dc6d93ea7d571bc3f49c2310f372af3755a98e2`) with verified green post-merge CI runs on `main`.
+
+### Compatibility & Operational Notes
+
+- **Compatibility Preserved**: Complies strictly with Semantic Versioning patch release rules and the v1.2.x line compatibility contract (`docs/release-baseline-v1.2.0.md` §8). No valid client inputs or API response structures are altered.
+- **Fail-Closed Threshold Enforcement**: Rejections only apply to inputs exhibiting known exploit patterns or pathological expansions far exceeding legitimate usage ($>20$ Base64 tokens or $>16$ Base64 chunks).
+- **Transient Memory Allocation Nuance**: Post-normalization length validation does not eliminate transient CPython heap allocation during the standard library call to `unicodedata.normalize("NFKC", text)` (up to ~3.6 MB for a 50 KB raw payload). The check terminates execution immediately post-normalization, preventing downstream CPU stalls and permanent memory retention.
+- **Governance Context**: Main branch protection (A-18) and Private Vulnerability Reporting (A-19) remain tracked as open administrative items in GitHub repository settings.
+- **Container Smoke Testing**: Docker Compose runtime smoke tests (Gate 7) remain deferred in host environments with active running containers to prevent disrupting production/staging services.
 
 ## 1.2.0
 
