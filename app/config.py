@@ -18,7 +18,7 @@ import os
 
 API_TITLE = "SentraGuard Lite"
 
-API_VERSION = "1.2.0"
+API_VERSION = "1.2.1"
 
 API_DESCRIPTION = """
 Offline AI Guardrails Gateway
