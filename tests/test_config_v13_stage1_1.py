@@ -10,12 +10,14 @@ from collections.abc import Mapping
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from pydantic_core import PydanticUndefined
 
 import app.config as config
 from app.config_specs import (
     ALL_KNOWN_GUARDRAILS_VARS,
     API_SETTINGS_ENV_BY_ATTR,
     CONFIG_SPECS,
+    ConfigFieldSpec,
 )
 
 
@@ -371,6 +373,112 @@ def test_f3_config_specs_pure_stdlib_in_fresh_subprocess():
     assert res.stdout.strip() == "OK"
 
 
+_SPECIAL_DISPLAY_ANNOTATIONS: dict[str, str] = {
+    # Deployment-specific or runtime-fallback notes appended to bare runtime defaults in CONFIG_SPECS.
+    "allow_anonymous": " (Code) / false (Container)",
+    "public_paths": " (/health, /docs, /redoc, /openapi.json)",
+    "env_file": " (disabled)",
+}
+
+
+def _declared_field_default(field_info, spec: ConfigFieldSpec) -> object:
+    """Extract declared default from Pydantic FieldInfo, invoking default_factory if used."""
+    if field_info.default_factory is not None:
+        return field_info.default_factory()
+    if field_info.default is not PydanticUndefined:
+        return field_info.default
+    raise AssertionError(
+        f"{spec.env_var} ({spec.python_attr}) has no declared default or default_factory on Settings"
+    )
+
+
+def _format_safe_value(value: object, *, sensitive: bool) -> str:
+    """Format values for assertion diagnostics without ever exposing secrets."""
+    if sensitive or isinstance(value, SecretStr):
+        return "<redacted>"
+    if isinstance(value, frozenset):
+        return f"frozenset({sorted(value)!r})"
+    return repr(value)
+
+
+def _same_typed_value(left: object, right: object) -> bool:
+    """Strict type- and order-safe equality across all Settings field default types."""
+    if isinstance(left, SecretStr) or isinstance(right, SecretStr):
+        return (
+            isinstance(left, SecretStr)
+            and isinstance(right, SecretStr)
+            and left.get_secret_value() == right.get_secret_value()
+        )
+    if left is None or right is None:
+        return left is None and right is None
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is bool and type(right) is bool and left is right
+    if isinstance(left, frozenset) or isinstance(right, frozenset):
+        return isinstance(left, frozenset) and isinstance(right, frozenset) and left == right
+    return type(left) is type(right) and left == right
+
+
+def _expected_default_display_from_runtime(default_val: object, spec: ConfigFieldSpec) -> str:
+    """Compute the expected CONFIG_SPECS.default_display directly from an actual runtime default."""
+    if isinstance(default_val, SecretStr):
+        if spec.sensitive is not True:
+            raise AssertionError(
+                f"{spec.env_var} ({spec.python_attr}) uses SecretStr but metadata sensitive=False"
+            )
+        if default_val.get_secret_value() != "":
+            raise AssertionError(
+                f"{spec.env_var} ({spec.python_attr}) has unexpected non-empty SecretStr default (<redacted>)"
+            )
+        base = '""'
+    elif default_val is None:
+        base = "None"
+    elif isinstance(default_val, bool):
+        base = "true" if default_val else "false"
+    elif isinstance(default_val, (int, float)):
+        base = str(default_val)
+    elif isinstance(default_val, str):
+        base = f'"{default_val}"'
+    elif isinstance(default_val, frozenset):
+        if len(default_val) == 0:
+            base = '"" (frozenset())'
+        else:
+            base = ", ".join(sorted(default_val))
+    else:
+        raise AssertionError(
+            f"Unsupported Settings default type {type(default_val).__name__} for "
+            f"{spec.env_var} ({spec.python_attr})"
+        )
+
+    suffix = _SPECIAL_DISPLAY_ANNOTATIONS.get(spec.python_attr or "", "")
+    return f"{base}{suffix}"
+
+
+def _verify_spec_default_consistency(
+    spec: ConfigFieldSpec,
+    declared_default: object,
+    instance_default: object,
+) -> None:
+    """Assert declared Pydantic default, Settings() runtime default, and metadata default_display match."""
+    is_sensitive = spec.sensitive or isinstance(declared_default, SecretStr) or isinstance(instance_default, SecretStr)
+    if is_sensitive:
+        assert spec.sensitive is True, (
+            f"{spec.env_var} ({spec.python_attr}) holds a secret default but is not marked sensitive=True"
+        )
+
+    assert _same_typed_value(declared_default, instance_default), (
+        f"{spec.env_var} ({spec.python_attr}) FieldInfo default "
+        f"{_format_safe_value(declared_default, sensitive=is_sensitive)} != "
+        f"Settings() instance default {_format_safe_value(instance_default, sensitive=is_sensitive)}"
+    )
+
+    expected_display = _expected_default_display_from_runtime(instance_default, spec)
+    assert spec.default_display == expected_display, (
+        f"{spec.env_var} ({spec.python_attr}) default_display mismatch: "
+        f"metadata={spec.default_display!r} vs runtime_derived={expected_display!r} "
+        f"(runtime_default={_format_safe_value(instance_default, sensitive=is_sensitive)})"
+    )
+
+
 def test_f3_metadata_registry_consistency_and_defaults():
     env_vars = [spec.env_var for spec in CONFIG_SPECS]
     assert len(env_vars) == len(set(env_vars))
@@ -396,45 +504,27 @@ def test_f3_metadata_registry_consistency_and_defaults():
     )
     assert "API_URL" not in ALL_KNOWN_GUARDRAILS_VARS
 
-    # Check declared defaults align with actual Settings defaults.
+    # Verify every mapped Settings field default (via FieldInfo + default_factory and Settings())
+    # directly against CONFIG_SPECS.default_display with complete type and uniqueness coverage.
     default_settings = config.Settings()
-    expected_default_displays = {
-        "api_key": '""',
-        "require_auth": "false",
-        "allow_anonymous": "true (Code) / false (Container)",
-        "public_paths": "None (/health, /docs, /redoc, /openapi.json)",
-        "max_request_body_bytes": "1048576",
-        "max_prompt_chars": "20000",
-        "max_context_docs": "20",
-        "max_doc_chars": "50000",
-        "max_normalized_prompt_chars": "40000",
-        "max_normalized_doc_chars": "100000",
-        "max_normalized_request_chars": "500000",
-        "rate_limit_requests": "60",
-        "rate_limit_window_seconds": "60",
-        "rate_limit_max_clients": "50000",
-        "auth_failure_limit_requests": "10",
-        "auth_failure_window_seconds": "60",
-        "rate_limit_backend": '"memory"',
-        "rate_limit_redis_url": '""',
-        "rate_limit_redis_timeout_seconds": "0.25",
-        "rate_limit_fail_closed": "false",
-        "trusted_proxies": '"" (frozenset())',
-        "env_file": "None (disabled)",
-        "strict_env": "false",
-    }
+    verified_attrs: list[str] = []
+    seen_types: set[type] = set()
+
     for spec in mapped_specs:
-        assert spec.default_display == expected_default_displays[spec.python_attr]
-        val = getattr(default_settings, spec.python_attr)
-        if isinstance(val, SecretStr):
-            assert spec.sensitive is True
-            assert val.get_secret_value() == ""
-        elif isinstance(val, bool):
-            assert spec.default_display.startswith(str(val).lower())
-        elif isinstance(val, int):
-            assert spec.default_display == str(val)
-        elif isinstance(val, float):
-            assert spec.default_display == str(val)
+        attr = spec.python_attr
+        assert attr is not None
+        assert attr not in verified_attrs, f"Duplicate verification attempted for {spec.env_var} ({attr})"
+
+        declared_default = _declared_field_default(model_fields[attr], spec)
+        instance_default = getattr(default_settings, attr)
+        _verify_spec_default_consistency(spec, declared_default, instance_default)
+
+        verified_attrs.append(attr)
+        seen_types.add(type(instance_default))
+
+    assert len(verified_attrs) == len(mapped_specs)
+    assert set(verified_attrs) == set(model_fields.keys())
+    assert seen_types == {SecretStr, bool, int, float, str, frozenset, type(None)}
 
     sensitive_vars = {spec.env_var for spec in CONFIG_SPECS if spec.sensitive}
     assert sensitive_vars == {
@@ -442,6 +532,135 @@ def test_f3_metadata_registry_consistency_and_defaults():
         "GUARDRAILS_RATE_LIMIT_REDIS_URL",
         "GUARDRAILS_UI_PASSWORD",
     }
+
+
+def _dummy_spec(**overrides) -> ConfigFieldSpec:
+    base = {
+        "env_var": "GUARDRAILS_TEST_FIELD",
+        "python_attr": "test_field",
+        "component": "API",
+        "section": "Test",
+        "type_display": "String",
+        "default_display": '"memory"',
+        "required_label": "Optional",
+        "validation_rules": "Test rule",
+        "description": "Test description",
+        "sensitive": False,
+    }
+    base.update(overrides)
+    return ConfigFieldSpec(**base)
+
+
+@pytest.mark.parametrize(
+    ("spec_overrides", "declared", "instance", "expected_fragment"),
+    [
+        # 1. Changed string default
+        (
+            {"env_var": "GUARDRAILS_RATE_LIMIT_BACKEND", "python_attr": "rate_limit_backend", "default_display": '"memory"'},
+            "redis",
+            "redis",
+            "GUARDRAILS_RATE_LIMIT_BACKEND (rate_limit_backend)",
+        ),
+        # 2a. Changed integer default
+        (
+            {"env_var": "GUARDRAILS_MAX_PROMPT_CHARS", "python_attr": "max_prompt_chars", "default_display": "20000"},
+            25000,
+            25000,
+            "GUARDRAILS_MAX_PROMPT_CHARS (max_prompt_chars)",
+        ),
+        # 2b. Changed float default
+        (
+            {"env_var": "GUARDRAILS_RATE_LIMIT_REDIS_TIMEOUT_SECONDS", "python_attr": "rate_limit_redis_timeout_seconds", "default_display": "0.25"},
+            0.5,
+            0.5,
+            "GUARDRAILS_RATE_LIMIT_REDIS_TIMEOUT_SECONDS (rate_limit_redis_timeout_seconds)",
+        ),
+        # 3. Changed frozenset default
+        (
+            {"env_var": "GUARDRAILS_TRUSTED_PROXIES", "python_attr": "trusted_proxies", "default_display": '"" (frozenset())'},
+            frozenset({"10.0.0.1"}),
+            frozenset({"10.0.0.1"}),
+            "GUARDRAILS_TRUSTED_PROXIES (trusted_proxies)",
+        ),
+        # 4. Changed None default
+        (
+            {"env_var": "GUARDRAILS_PUBLIC_PATHS", "python_attr": "public_paths", "default_display": "None (/health, /docs, /redoc, /openapi.json)"},
+            "/health",
+            "/health",
+            "GUARDRAILS_PUBLIC_PATHS (public_paths)",
+        ),
+        # 5. Changed boolean default
+        (
+            {"env_var": "GUARDRAILS_ALLOW_ANONYMOUS", "python_attr": "allow_anonymous", "default_display": "true (Code) / false (Container)"},
+            False,
+            False,
+            "GUARDRAILS_ALLOW_ANONYMOUS (allow_anonymous)",
+        ),
+        # 7a. Incorrect default_display when runtime value itself is unchanged
+        (
+            {"env_var": "GUARDRAILS_MAX_DOC_CHARS", "python_attr": "max_doc_chars", "default_display": "99999"},
+            50000,
+            50000,
+            "GUARDRAILS_MAX_DOC_CHARS (max_doc_chars)",
+        ),
+        # 7b. FieldInfo default diverges from Settings() instance default
+        (
+            {"env_var": "GUARDRAILS_REQUIRE_AUTH", "python_attr": "require_auth", "default_display": "false"},
+            True,
+            False,
+            "GUARDRAILS_REQUIRE_AUTH (require_auth)",
+        ),
+    ],
+)
+def test_f3_metadata_drift_detection_negative_cases(spec_overrides, declared, instance, expected_fragment):
+    spec = _dummy_spec(**spec_overrides)
+    with pytest.raises(AssertionError, match=expected_fragment.replace("(", r"\(").replace(")", r"\)")):
+        _verify_spec_default_consistency(spec, declared, instance)
+
+
+def test_f3_metadata_drift_sensitive_and_unordered_collection_handling():
+    secret_sentinel = "super-secret-drift-value-do-not-expose"
+
+    # Sensitive field with unexpected non-empty SecretStr default fails without leaking value.
+    spec_secret = _dummy_spec(
+        env_var="GUARDRAILS_API_KEY",
+        python_attr="api_key",
+        default_display='""',
+        sensitive=True,
+    )
+    with pytest.raises(AssertionError) as exc_secret:
+        _verify_spec_default_consistency(spec_secret, SecretStr(secret_sentinel), SecretStr(secret_sentinel))
+    assert "GUARDRAILS_API_KEY (api_key)" in str(exc_secret.value)
+    assert secret_sentinel not in str(exc_secret.value)
+
+    # Sensitive SecretStr field marked sensitive=False fails cleanly.
+    spec_unmarked = _dummy_spec(
+        env_var="GUARDRAILS_API_KEY",
+        python_attr="api_key",
+        default_display='""',
+        sensitive=False,
+    )
+    with pytest.raises(AssertionError, match="sensitive=True"):
+        _verify_spec_default_consistency(spec_unmarked, SecretStr(""), SecretStr(""))
+
+    # Sensitive FieldInfo vs Settings() mismatch redacts values in diagnostics.
+    with pytest.raises(AssertionError) as exc_mismatch:
+        _verify_spec_default_consistency(spec_secret, SecretStr(secret_sentinel), SecretStr(""))
+    assert "<redacted>" in str(exc_mismatch.value)
+    assert secret_sentinel not in str(exc_mismatch.value)
+
+    # Unordered frozenset equality ignores iteration ordering.
+    assert _same_typed_value(frozenset({"10.0.0.2", "10.0.0.1"}), frozenset({"10.0.0.1", "10.0.0.2"}))
+    spec_proxies = _dummy_spec(
+        env_var="GUARDRAILS_TRUSTED_PROXIES",
+        python_attr="trusted_proxies",
+        default_display="10.0.0.1, 10.0.0.2",
+    )
+    _verify_spec_default_consistency(
+        spec_proxies,
+        frozenset({"10.0.0.2", "10.0.0.1"}),
+        frozenset({"10.0.0.1", "10.0.0.2"}),
+    )
 
 
 # ---------------------------------------------------------------------------
