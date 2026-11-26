@@ -420,6 +420,12 @@ def _same_typed_value(left: object, right: object) -> bool:
 
 def _expected_default_display_from_runtime(default_val: object, spec: ConfigFieldSpec) -> str:
     """Compute the expected CONFIG_SPECS.default_display directly from an actual runtime default."""
+    if spec.sensitive and not isinstance(default_val, SecretStr):
+        raise AssertionError(
+            f"{spec.env_var} ({spec.python_attr}) is marked sensitive=True "
+            "but uses unsupported non-SecretStr runtime default (<redacted>)"
+        )
+
     if isinstance(default_val, SecretStr):
         if spec.sensitive is not True:
             raise AssertionError(
@@ -460,23 +466,25 @@ def _verify_spec_default_consistency(
 ) -> None:
     """Assert declared Pydantic default, Settings() runtime default, and metadata default_display match."""
     is_sensitive = spec.sensitive or isinstance(declared_default, SecretStr) or isinstance(instance_default, SecretStr)
-    if is_sensitive:
-        assert spec.sensitive is True, (
+    if is_sensitive and not spec.sensitive:
+        raise AssertionError(
             f"{spec.env_var} ({spec.python_attr}) holds a secret default but is not marked sensitive=True"
         )
 
-    assert _same_typed_value(declared_default, instance_default), (
-        f"{spec.env_var} ({spec.python_attr}) FieldInfo default "
-        f"{_format_safe_value(declared_default, sensitive=is_sensitive)} != "
-        f"Settings() instance default {_format_safe_value(instance_default, sensitive=is_sensitive)}"
-    )
+    if not _same_typed_value(declared_default, instance_default):
+        raise AssertionError(
+            f"{spec.env_var} ({spec.python_attr}) FieldInfo default "
+            f"{_format_safe_value(declared_default, sensitive=is_sensitive)} != "
+            f"Settings() instance default {_format_safe_value(instance_default, sensitive=is_sensitive)}"
+        )
 
     expected_display = _expected_default_display_from_runtime(instance_default, spec)
-    assert spec.default_display == expected_display, (
-        f"{spec.env_var} ({spec.python_attr}) default_display mismatch: "
-        f"metadata={spec.default_display!r} vs runtime_derived={expected_display!r} "
-        f"(runtime_default={_format_safe_value(instance_default, sensitive=is_sensitive)})"
-    )
+    if spec.default_display != expected_display:
+        raise AssertionError(
+            f"{spec.env_var} ({spec.python_attr}) default_display mismatch: "
+            f"metadata={spec.default_display!r} vs runtime_derived={expected_display!r} "
+            f"(runtime_default={_format_safe_value(instance_default, sensitive=is_sensitive)})"
+        )
 
 
 def test_f3_metadata_registry_consistency_and_defaults():
@@ -661,6 +669,51 @@ def test_f3_metadata_drift_sensitive_and_unordered_collection_handling():
         frozenset({"10.0.0.2", "10.0.0.1"}),
         frozenset({"10.0.0.1", "10.0.0.2"}),
     )
+
+
+def test_f3_sensitive_plain_string_default_never_leaks_and_plain_string_display_preserved():
+    sentinel = "plain-string-secret-sentinel-DO-NOT-LEAK"
+
+    spec_sensitive_plain = _dummy_spec(
+        env_var="GUARDRAILS_SENSITIVE_PLAIN",
+        python_attr="sensitive_plain",
+        default_display='"intentionally-mismatched"',
+        sensitive=True,
+    )
+
+    # Full metadata verification path must fail safely without exposing the plain-string secret.
+    with pytest.raises(AssertionError) as exc_verify:
+        _verify_spec_default_consistency(spec_sensitive_plain, sentinel, sentinel)
+    verify_text = str(exc_verify.value)
+    verify_repr = repr(exc_verify.value)
+    assert "GUARDRAILS_SENSITIVE_PLAIN (sensitive_plain)" in verify_text
+    assert "<redacted>" in verify_text
+    assert sentinel not in verify_text
+    assert sentinel not in verify_repr
+
+    # Runtime-display helper directly also refuses to format sensitive non-SecretStr defaults.
+    with pytest.raises(AssertionError) as exc_display:
+        _expected_default_display_from_runtime(sentinel, spec_sensitive_plain)
+    assert sentinel not in str(exc_display.value)
+    assert sentinel not in repr(exc_display.value)
+
+    # Declared-vs-instance mismatch on sensitive plain string also stays redacted.
+    with pytest.raises(AssertionError) as exc_diff:
+        _verify_spec_default_consistency(spec_sensitive_plain, sentinel, "other-secret-sentinel")
+    assert sentinel not in str(exc_diff.value)
+    assert "other-secret-sentinel" not in str(exc_diff.value)
+    assert sentinel not in repr(exc_diff.value)
+    assert "<redacted>" in str(exc_diff.value)
+
+    # Non-sensitive ordinary string preserves standard quoted display convention.
+    spec_ordinary = _dummy_spec(
+        env_var="GUARDRAILS_ORDINARY_STR",
+        python_attr="ordinary_str",
+        default_display='"custom-mode"',
+        sensitive=False,
+    )
+    assert _expected_default_display_from_runtime("custom-mode", spec_ordinary) == '"custom-mode"'
+    _verify_spec_default_consistency(spec_ordinary, "custom-mode", "custom-mode")
 
 
 # ---------------------------------------------------------------------------
