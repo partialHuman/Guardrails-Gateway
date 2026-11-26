@@ -51,7 +51,7 @@ CONFIG_SPECS: tuple[ConfigFieldSpec, ...] = (
         default_display="false",
         required_label="Optional",
         validation_rules="Strict boolean (true/false, 1/0, yes/no, on/off, y/n, t/f)",
-        description="Mandates authentication; fails startup if true while GUARDRAILS_API_KEY is empty.",
+        description="Mandates authentication; fails configuration validation if true while GUARDRAILS_API_KEY is empty.",
     ),
     ConfigFieldSpec(
         env_var="GUARDRAILS_ALLOW_ANONYMOUS",

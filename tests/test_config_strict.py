@@ -26,7 +26,11 @@ def reloaded_config(monkeypatch, **env):
     "value", ["true", "TRUE", "True", "1", "yes", "on", "ON", "y", "t", "  on  "]
 )
 def test_require_auth_truthy_spellings_enable_auth(monkeypatch, value):
-    with reloaded_config(monkeypatch, GUARDRAILS_REQUIRE_AUTH=value) as cfg:
+    with reloaded_config(
+        monkeypatch,
+        GUARDRAILS_REQUIRE_AUTH=value,
+        GUARDRAILS_API_KEY="test-strict-config-api-key",
+    ) as cfg:
         assert cfg.REQUIRE_AUTH is True
 
 
@@ -128,7 +132,11 @@ def test_public_paths_override_is_parsed(monkeypatch):
 
 
 def test_rate_limit_backend_is_normalised_and_validated(monkeypatch):
-    with reloaded_config(monkeypatch, GUARDRAILS_RATE_LIMIT_BACKEND=" Redis ") as cfg:
+    with reloaded_config(
+        monkeypatch,
+        GUARDRAILS_RATE_LIMIT_BACKEND=" Redis ",
+        GUARDRAILS_RATE_LIMIT_REDIS_URL="redis://localhost:6379/0",
+    ) as cfg:
         assert cfg.RATE_LIMIT_BACKEND == "redis"
 
     with pytest.raises(ValueError, match="GUARDRAILS_RATE_LIMIT_BACKEND"):

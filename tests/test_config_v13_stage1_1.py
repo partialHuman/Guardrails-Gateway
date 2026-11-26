@@ -1,0 +1,551 @@
+"""Permanent Stage 1.1 tests for effective-env detection, cross-field Settings validation, and metadata consistency."""
+
+from __future__ import annotations
+
+import importlib
+import subprocess
+import sys
+import traceback
+from collections.abc import Mapping
+
+import pytest
+from pydantic import SecretStr, ValidationError
+
+import app.config as config
+from app.config_specs import (
+    ALL_KNOWN_GUARDRAILS_VARS,
+    API_SETTINGS_ENV_BY_ATTR,
+    CONFIG_SPECS,
+)
+
+
+class _KeyOnlyMapping(Mapping[str, str]):
+    """Mapping stub whose values cannot be accessed directly via __getitem__."""
+
+    def __init__(self, data: dict[str, str], allow_value_keys: frozenset[str] = frozenset()) -> None:
+        self._data = data
+        self._allow_value_keys = allow_value_keys
+
+    def __getitem__(self, key: str) -> str:
+        if key not in self._allow_value_keys:
+            raise AssertionError(f"Secret/unknown value for key {key!r} must never be read")
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+# ---------------------------------------------------------------------------
+# Finding F1: Environment-file-aware unknown-variable detection
+# ---------------------------------------------------------------------------
+
+
+def test_f1_unknown_var_only_in_explicit_env_file(tmp_path):
+    env_file = tmp_path / "f1.env"
+    secret_val = "f1-file-only-secret-xyz"
+    env_file.write_text(
+        f"GUARDRAILS_UNKNOWN_FILE_KEY={secret_val}\nGUARDRAILS_MAX_PROMPT_CHARS=100\n",
+        encoding="utf-8",
+    )
+    unknown = config.detect_unknown_guardrails_vars({"GUARDRAILS_ENV_FILE": str(env_file)})
+    assert unknown == ("GUARDRAILS_UNKNOWN_FILE_KEY",)
+    assert secret_val not in repr(unknown)
+
+
+def test_f1_unknown_var_only_in_process_env():
+    secret_val = "f1-proc-only-secret-xyz"
+    unknown = config.detect_unknown_guardrails_vars({"GUARDRAILS_UNKNOWN_PROC_KEY": secret_val})
+    assert unknown == ("GUARDRAILS_UNKNOWN_PROC_KEY",)
+    assert secret_val not in repr(unknown)
+
+
+def test_f1_known_vars_across_sources_produce_no_warnings(tmp_path):
+    env_file = tmp_path / "known.env"
+    env_file.write_text(
+        "GUARDRAILS_MAX_PROMPT_CHARS=25000\n"
+        "GUARDRAILS_UI_PASSWORD=ui-secret\n"
+        "GUARDRAILS_BIND_ADDRESS=127.0.0.1\n",
+        encoding="utf-8",
+    )
+    unknown = config.detect_unknown_guardrails_vars(
+        {
+            "GUARDRAILS_ENV_FILE": str(env_file),
+            "GUARDRAILS_API_KEY": "api-secret",
+            "GUARDRAILS_UI_ALLOW_ANONYMOUS": "false",
+            "GUARDRAILS_API_URL": "http://127.0.0.1:8000",
+            "API_URL": "http://localhost:8000",
+            "UNRELATED_SYSTEM_VAR": "ignored",
+        }
+    )
+    assert unknown == ()
+
+
+def test_f1_same_unknown_var_in_both_sources_and_empty_process_override(tmp_path):
+    env_file = tmp_path / "both.env"
+    env_file.write_text(
+        "GUARDRAILS_SHARED_UNKNOWN=from-file-secret\n"
+        "GUARDRAILS_EMPTY_OVERRIDE_UNKNOWN=from-file-val\n",
+        encoding="utf-8",
+    )
+    unknown = config.detect_unknown_guardrails_vars(
+        {
+            "GUARDRAILS_ENV_FILE": str(env_file),
+            "GUARDRAILS_SHARED_UNKNOWN": "from-process-secret",
+            "GUARDRAILS_EMPTY_OVERRIDE_UNKNOWN": "",
+        }
+    )
+    assert unknown == ("GUARDRAILS_SHARED_UNKNOWN", "GUARDRAILS_EMPTY_OVERRIDE_UNKNOWN")
+    assert "from-file-secret" not in repr(unknown)
+    assert "from-process-secret" not in repr(unknown)
+
+
+def test_f1_no_implicit_dotenv_or_whitespace_env_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("GUARDRAILS_IMPLICIT_UNKNOWN=should_ignore\n", encoding="utf-8")
+
+    assert config.detect_unknown_guardrails_vars({}) == ()
+    assert config.detect_unknown_guardrails_vars({"GUARDRAILS_ENV_FILE": "   "}) == ()
+    assert config.Settings.from_environ({}).max_prompt_chars == 20_000
+
+
+def test_f1_malformed_and_duplicate_env_file_fail_closed(tmp_path):
+    malformed = tmp_path / "malformed.env"
+    malformed.write_text("GUARDRAILS_BAD_LINE_WITHOUT_EQUALS\n", encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="line 1"):
+        config.detect_unknown_guardrails_vars({"GUARDRAILS_ENV_FILE": str(malformed)})
+
+    duplicate = tmp_path / "dup.env"
+    duplicate.write_text(
+        "GUARDRAILS_TYPO_DUP=secret-first\nGUARDRAILS_TYPO_DUP=secret-second\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.detect_unknown_guardrails_vars({"GUARDRAILS_ENV_FILE": str(duplicate)})
+    assert "GUARDRAILS_TYPO_DUP" in str(exc_info.value)
+    assert "line 2" in str(exc_info.value)
+    assert "secret-first" not in str(exc_info.value)
+    assert "secret-second" not in str(exc_info.value)
+
+
+def test_f1_key_only_inspection_never_reads_unknown_process_values(tmp_path):
+    env_file = tmp_path / "file_ok.env"
+    env_file.write_text("GUARDRAILS_FILE_TYPO=file-secret-value\n", encoding="utf-8")
+
+    mapping = _KeyOnlyMapping(
+        {
+            "GUARDRAILS_ENV_FILE": str(env_file),
+            "GUARDRAILS_API_KEY": "process-secret-token",
+            "GUARDRAILS_PROC_TYPO": "process-secret-unknown-value",
+        },
+        allow_value_keys=frozenset({"GUARDRAILS_ENV_FILE"}),
+    )
+    unknown = config.detect_unknown_guardrails_vars(mapping)
+    assert unknown == ("GUARDRAILS_FILE_TYPO", "GUARDRAILS_PROC_TYPO")
+    assert "file-secret-value" not in repr(unknown)
+    assert "process-secret-unknown-value" not in repr(unknown)
+
+
+# ---------------------------------------------------------------------------
+# Finding F2: Cross-field Settings validation & atomic reload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("require_auth", "api_key", "expected_valid"),
+    [
+        ("false", "", True),
+        ("false", "valid-api-key-12345678", True),
+        ("true", "", False),
+        ("true", "   ", False),
+        ("true", "valid-api-key-12345678", True),
+    ],
+)
+def test_f2_require_auth_api_key_matrix(require_auth, api_key, expected_valid):
+    env = {"GUARDRAILS_REQUIRE_AUTH": require_auth, "GUARDRAILS_API_KEY": api_key}
+    if expected_valid:
+        s = config.Settings.from_environ(env)
+        assert s.require_auth is (require_auth == "true")
+    else:
+        with pytest.raises(config.ConfigError) as exc_info:
+            config.Settings.from_environ(env)
+        err = exc_info.value
+        assert err.__cause__ is None
+        assert err.__context__ is None
+        assert "GUARDRAILS_REQUIRE_AUTH" in str(err)
+        assert "GUARDRAILS_API_KEY" in str(err)
+
+
+@pytest.mark.parametrize(
+    ("backend", "redis_url", "expected_valid"),
+    [
+        ("memory", "", True),
+        ("memory", "redis://localhost:6379/0", True),
+        ("redis", "", False),
+        ("redis", "   ", False),
+        ("redis", "redis://localhost:6379/0", True),
+    ],
+)
+def test_f2_redis_backend_url_matrix(backend, redis_url, expected_valid):
+    env = {"GUARDRAILS_RATE_LIMIT_BACKEND": backend, "GUARDRAILS_RATE_LIMIT_REDIS_URL": redis_url}
+    if expected_valid:
+        s = config.Settings.from_environ(env)
+        assert s.rate_limit_backend == backend
+    else:
+        with pytest.raises(config.ConfigError) as exc_info:
+            config.Settings.from_environ(env)
+        err = exc_info.value
+        assert err.__cause__ is None
+        assert err.__context__ is None
+        assert "GUARDRAILS_RATE_LIMIT_BACKEND" in str(err)
+        assert "GUARDRAILS_RATE_LIMIT_REDIS_URL" in str(err)
+
+
+def test_f2_direct_settings_model_validator_immutability_and_redaction():
+    s = config.Settings(require_auth=True, api_key="direct-secret-key-99999")
+    assert isinstance(s.api_key, SecretStr)
+    assert isinstance(s.rate_limit_redis_url, SecretStr)
+    assert "direct-secret-key-99999" not in repr(s)
+    assert "direct-secret-key-99999" not in str(s)
+    with pytest.raises(ValidationError):
+        s.require_auth = False  # type: ignore[misc]
+
+    with pytest.raises(ValidationError, match="GUARDRAILS_REQUIRE_AUTH"):
+        config.Settings(require_auth=True, api_key="   ")
+
+    with pytest.raises(ValidationError, match="GUARDRAILS_RATE_LIMIT_REDIS_URL"):
+        config.Settings(rate_limit_backend="redis", rate_limit_redis_url="   ")
+
+    secret_bad_redis = "http://user:topsecret@bad-redis.internal/0"
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.Settings.from_environ({"GUARDRAILS_RATE_LIMIT_REDIS_URL": secret_bad_redis})
+    err = exc_info.value
+    assert err.__cause__ is None
+    assert err.__context__ is None
+    assert "topsecret" not in str(err)
+    assert "topsecret" not in repr(err)
+    tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+    assert "topsecret" not in tb
+    assert "ValidationError" not in tb
+
+    for bad_kwargs in (
+        {"api_key": 123},
+        {"require_auth": 123},
+        {"allow_anonymous": "bad-bool"},
+        {"max_prompt_chars": True},
+        {"max_prompt_chars": "not-int"},
+        {"max_prompt_chars": 1.5},
+        {"rate_limit_redis_timeout_seconds": True},
+        {"rate_limit_redis_timeout_seconds": "bad-float"},
+        {"rate_limit_redis_timeout_seconds": float("nan")},
+        {"rate_limit_redis_timeout_seconds": object()},
+        {"rate_limit_backend": 99},
+        {"public_paths": 99},
+        {"trusted_proxies": 99},
+        {"env_file": 99},
+    ):
+        with pytest.raises(ValueError):
+            config.Settings(**bad_kwargs)
+
+
+def test_f2_direct_env_helpers_and_empty_defaults(monkeypatch):
+    monkeypatch.delenv("TEST_BOOL_S11", raising=False)
+    assert config._bool_env("TEST_BOOL_S11", True) is True
+    monkeypatch.setenv("TEST_BOOL_S11", "bad-bool")
+    with pytest.raises(config.ConfigError, match="TEST_BOOL_S11"):
+        config._bool_env("TEST_BOOL_S11", True)
+
+    monkeypatch.delenv("TEST_FLOAT_S11", raising=False)
+    assert config._float_env("TEST_FLOAT_S11", 0.5) == 0.5
+    monkeypatch.setenv("TEST_FLOAT_S11", "nan")
+    with pytest.raises(config.ConfigError, match="TEST_FLOAT_S11"):
+        config._float_env("TEST_FLOAT_S11", 0.5)
+
+    empty_defaults = config.Settings(
+        api_key=SecretStr("  secret  "),
+        require_auth="  ",
+        max_prompt_chars="   ",
+        rate_limit_redis_timeout_seconds="   ",
+        rate_limit_backend=None,
+        public_paths=["/health/", "/"],
+        trusted_proxies=["10.0.0.1"],
+        env_file="   ",
+    )
+    assert empty_defaults.api_key.get_secret_value() == "secret"
+    assert empty_defaults.require_auth is False
+    assert empty_defaults.max_prompt_chars == 20_000
+    assert empty_defaults.rate_limit_redis_timeout_seconds == 0.25
+    assert empty_defaults.rate_limit_backend == "memory"
+    assert empty_defaults.public_paths == frozenset({"/health", "/"})
+    assert empty_defaults.trusted_proxies == frozenset({"10.0.0.1"})
+    assert empty_defaults.env_file is None
+
+
+def test_f2_import_time_reload_fails_closed_on_cross_field_violation(monkeypatch):
+    # Note: importlib.reload(config) instantiates a new ConfigError subclass of ValueError
+    # inside config, so catching ValueError reliably captures the post-reload exception.
+    monkeypatch.setenv("GUARDRAILS_REQUIRE_AUTH", "true")
+    monkeypatch.delenv("GUARDRAILS_API_KEY", raising=False)
+    try:
+        with pytest.raises(ValueError, match="GUARDRAILS_REQUIRE_AUTH") as exc_auth:
+            importlib.reload(config)
+        assert type(exc_auth.value).__name__ == "ConfigError"
+    finally:
+        monkeypatch.delenv("GUARDRAILS_REQUIRE_AUTH", raising=False)
+        importlib.reload(config)
+
+    monkeypatch.setenv("GUARDRAILS_RATE_LIMIT_BACKEND", "redis")
+    monkeypatch.delenv("GUARDRAILS_RATE_LIMIT_REDIS_URL", raising=False)
+    try:
+        with pytest.raises(ValueError, match="GUARDRAILS_RATE_LIMIT_REDIS_URL") as exc_redis:
+            importlib.reload(config)
+        assert type(exc_redis.value).__name__ == "ConfigError"
+    finally:
+        monkeypatch.delenv("GUARDRAILS_RATE_LIMIT_BACKEND", raising=False)
+        importlib.reload(config)
+
+
+def test_f2_reload_settings_is_atomic_on_validation_failure():
+    secret_api = "atomic-good-key-123456"
+    secret_redis = "rediss://redis-host:6380/0"
+    good = config.reload_settings(
+        {
+            "GUARDRAILS_REQUIRE_AUTH": "true",
+            "GUARDRAILS_API_KEY": secret_api,
+            "GUARDRAILS_RATE_LIMIT_BACKEND": "redis",
+            "GUARDRAILS_RATE_LIMIT_REDIS_URL": secret_redis,
+            "GUARDRAILS_MAX_PROMPT_CHARS": "12000",
+        }
+    )
+    try:
+        assert isinstance(config.API_KEY, str) and config.API_KEY == secret_api
+        assert isinstance(config.RATE_LIMIT_REDIS_URL, str) and config.RATE_LIMIT_REDIS_URL == secret_redis
+        assert config.REQUIRE_AUTH is True
+        assert config.RATE_LIMIT_BACKEND == "redis"
+        assert config.MAX_PROMPT_CHARS == 12000
+
+        # Failing reload must preserve previously active settings and module globals intact.
+        with pytest.raises(config.ConfigError):
+            config.reload_settings(
+                {
+                    "GUARDRAILS_REQUIRE_AUTH": "true",
+                    "GUARDRAILS_API_KEY": "",
+                    "GUARDRAILS_MAX_PROMPT_CHARS": "999",
+                }
+            )
+        assert config.get_settings() == good
+        assert config.API_KEY == secret_api
+        assert config.RATE_LIMIT_REDIS_URL == secret_redis
+        assert config.REQUIRE_AUTH is True
+        assert config.MAX_PROMPT_CHARS == 12000
+    finally:
+        config.reload_settings({})
+
+
+# ---------------------------------------------------------------------------
+# Finding F3: Configuration metadata and registry consistency
+# ---------------------------------------------------------------------------
+
+
+def test_f3_config_specs_pure_stdlib_in_fresh_subprocess():
+    code = (
+        "import sys, os, dataclasses, importlib.util\n"
+        "os.environ['GUARDRAILS_REQUIRE_AUTH'] = 'invalid-bool'\n"
+        "os.environ['GUARDRAILS_API_KEY'] = 'subproc-secret'\n"
+        "spec = importlib.util.spec_from_file_location('_sg_f3_specs', 'app/config_specs.py')\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['_sg_f3_specs'] = mod\n"
+        "try:\n"
+        "    spec.loader.exec_module(mod)\n"
+        "    assert 'pydantic' not in sys.modules\n"
+        "    assert 'app' not in sys.modules\n"
+        "    assert 'app.config' not in sys.modules\n"
+        "    assert dataclasses.is_dataclass(mod.ConfigFieldSpec)\n"
+        "finally:\n"
+        "    sys.modules.pop('_sg_f3_specs', None)\n"
+        "print('OK')\n"
+    )
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert res.stdout.strip() == "OK"
+
+
+def test_f3_metadata_registry_consistency_and_defaults():
+    env_vars = [spec.env_var for spec in CONFIG_SPECS]
+    assert len(env_vars) == len(set(env_vars))
+
+    mapped_specs = [spec for spec in CONFIG_SPECS if spec.python_attr is not None]
+    mapped_attrs = [spec.python_attr for spec in mapped_specs]
+    assert len(mapped_attrs) == len(set(mapped_attrs))
+
+    model_fields = config.Settings.model_fields
+    assert set(mapped_attrs) == set(model_fields.keys())
+    assert API_SETTINGS_ENV_BY_ATTR == {spec.python_attr: spec.env_var for spec in mapped_specs}
+
+    for spec in CONFIG_SPECS:
+        if spec.python_attr is None:
+            assert spec.env_var not in API_SETTINGS_ENV_BY_ATTR.values()
+            assert spec.component in {"UI", "CLI", "Compose"}
+        else:
+            assert spec.python_attr in model_fields
+            assert "API" in spec.component or "Loader" in spec.component
+
+    assert ALL_KNOWN_GUARDRAILS_VARS == frozenset(
+        spec.env_var for spec in CONFIG_SPECS if spec.env_var.upper().startswith("GUARDRAILS_")
+    )
+    assert "API_URL" not in ALL_KNOWN_GUARDRAILS_VARS
+
+    # Check declared defaults align with actual Settings defaults.
+    default_settings = config.Settings()
+    expected_default_displays = {
+        "api_key": '""',
+        "require_auth": "false",
+        "allow_anonymous": "true (Code) / false (Container)",
+        "public_paths": "None (/health, /docs, /redoc, /openapi.json)",
+        "max_request_body_bytes": "1048576",
+        "max_prompt_chars": "20000",
+        "max_context_docs": "20",
+        "max_doc_chars": "50000",
+        "max_normalized_prompt_chars": "40000",
+        "max_normalized_doc_chars": "100000",
+        "max_normalized_request_chars": "500000",
+        "rate_limit_requests": "60",
+        "rate_limit_window_seconds": "60",
+        "rate_limit_max_clients": "50000",
+        "auth_failure_limit_requests": "10",
+        "auth_failure_window_seconds": "60",
+        "rate_limit_backend": '"memory"',
+        "rate_limit_redis_url": '""',
+        "rate_limit_redis_timeout_seconds": "0.25",
+        "rate_limit_fail_closed": "false",
+        "trusted_proxies": '"" (frozenset())',
+        "env_file": "None (disabled)",
+        "strict_env": "false",
+    }
+    for spec in mapped_specs:
+        assert spec.default_display == expected_default_displays[spec.python_attr]
+        val = getattr(default_settings, spec.python_attr)
+        if isinstance(val, SecretStr):
+            assert spec.sensitive is True
+            assert val.get_secret_value() == ""
+        elif isinstance(val, bool):
+            assert spec.default_display.startswith(str(val).lower())
+        elif isinstance(val, int):
+            assert spec.default_display == str(val)
+        elif isinstance(val, float):
+            assert spec.default_display == str(val)
+
+    sensitive_vars = {spec.env_var for spec in CONFIG_SPECS if spec.sensitive}
+    assert sensitive_vars == {
+        "GUARDRAILS_API_KEY",
+        "GUARDRAILS_RATE_LIMIT_REDIS_URL",
+        "GUARDRAILS_UI_PASSWORD",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 parser grammar & loader error paths (permanent regression baseline)
+# ---------------------------------------------------------------------------
+
+
+def test_env_file_precedence_and_errors(tmp_path, monkeypatch):
+    explicit = tmp_path / "precedence.env"
+    explicit.write_text(
+        "GUARDRAILS_API_KEY=file-secret\n"
+        "GUARDRAILS_MAX_PROMPT_CHARS=8888\n"
+        "GUARDRAILS_REQUIRE_AUTH=true\n",
+        encoding="utf-8",
+    )
+    resolved = config.Settings.from_environ(
+        {
+            "GUARDRAILS_ENV_FILE": str(explicit),
+            "GUARDRAILS_API_KEY": "process-secret",
+            "GUARDRAILS_MAX_PROMPT_CHARS": "",
+        }
+    )
+    assert resolved.api_key.get_secret_value() == "process-secret"
+    assert resolved.max_prompt_chars == 20_000
+    assert resolved.require_auth is True
+
+    with pytest.raises(config.ConfigError, match="missing_file"):
+        config.load_env_file(tmp_path / "missing.env")
+
+    d = tmp_path / "dir"
+    d.mkdir()
+    with pytest.raises(config.ConfigError, match="not_a_regular_file"):
+        config.load_env_file(d)
+
+    bad_utf8 = tmp_path / "bad_utf8.env"
+    bad_utf8.write_bytes(b"KEY=\xff\xfe\xfd")
+    with pytest.raises(config.ConfigError, match="invalid_utf8"):
+        config.load_env_file(bad_utf8)
+
+    unreadable = tmp_path / "unreadable.env"
+    unreadable.write_text("KEY=1\n", encoding="utf-8")
+    monkeypatch.setattr(type(unreadable), "read_text", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("no")))
+    with pytest.raises(config.ConfigError, match="unreadable_file"):
+        config.load_env_file(unreadable)
+    monkeypatch.undo()
+
+    self_ref = tmp_path / "self_ref.env"
+    self_ref.write_text("GUARDRAILS_ENV_FILE=/other.env\n", encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="GUARDRAILS_ENV_FILE"):
+        config.load_env_file(self_ref)
+
+
+def test_env_file_positive_and_negative_literal_dollar_grammar(tmp_path):
+    pos = tmp_path / "pos.env"
+    pos.write_text(
+        "# comment\n"
+        "export EXP = one # comment\n"
+        "EQ=a=b==1\n"
+        "HASH=abc#123\n"
+        "EMPTY= # comment\n"
+        "SQ1='$'\n"
+        "SQ2='$VAR'\n"
+        "DQ1=\"\\$\"\n"
+        "DQ2=\"\\$VAR\"\n"
+        "DQ_ESC=\"\\\"\\\\\\n\\r\\t\"\n",
+        encoding="utf-8",
+    )
+    assert config.load_env_file(pos) == {
+        "EXP": "one",
+        "EQ": "a=b==1",
+        "HASH": "abc#123",
+        "EMPTY": "",
+        "SQ1": "$",
+        "SQ2": "$VAR",
+        "DQ1": "$",
+        "DQ2": "$VAR",
+        "DQ_ESC": '"\\\n\r\t',
+    }
+
+    bad_lines = [
+        "NO_EQUALS",
+        "export",
+        "1BAD=1",
+        "KEY='unterminated",
+        'KEY="unterminated',
+        "KEY='ok' trailing",
+        'KEY="bad\\q"',
+        'KEY="end\\',
+        "KEY=a'b",
+        "KEY=$",
+        r"KEY=\$",
+        "KEY=$VAR",
+        r"KEY=\$VAR",
+        "KEY=${VAR}",
+        "KEY=$()",
+        "KEY=`cmd`",
+        'KEY="$"',
+        'KEY="$VAR"',
+        'KEY="${VAR}"',
+        'KEY="$()"',
+        'KEY="`cmd`"',
+    ]
+    for line in bad_lines:
+        bad = tmp_path / "bad.env"
+        bad.write_text(f"{line}\n", encoding="utf-8")
+        with pytest.raises(config.ConfigError, match="line 1"):
+            config.load_env_file(bad)

@@ -24,7 +24,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.config_specs import ALL_KNOWN_GUARDRAILS_VARS, API_SETTINGS_ENV_BY_ATTR
 
@@ -365,16 +373,28 @@ def load_env_file(path: Path) -> dict[str, str]:
     return parsed
 
 
-def build_effective_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Resolve effective environment with process env > explicit GUARDRAILS_ENV_FILE."""
+def _resolve_env_sources(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], Mapping[str, str]]:
+    """Resolve optional GUARDRAILS_ENV_FILE values and return (file_vars, process_env)."""
     process_env = os.environ if environ is None else environ
-    raw_env_file = process_env.get("GUARDRAILS_ENV_FILE")
+    raw_env_file = (
+        process_env["GUARDRAILS_ENV_FILE"]
+        if "GUARDRAILS_ENV_FILE" in process_env
+        else None
+    )
 
     file_vars: dict[str, str] = {}
     if raw_env_file is not None and raw_env_file.strip():
         resolved = Path(raw_env_file.strip()).expanduser()
         file_vars = load_env_file(resolved)
 
+    return file_vars, process_env
+
+
+def build_effective_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Resolve effective environment with process env > explicit GUARDRAILS_ENV_FILE."""
+    file_vars, process_env = _resolve_env_sources(environ)
     # Process keys — even when empty string "" — always override file keys.
     return {**file_vars, **process_env}
 
@@ -382,11 +402,12 @@ def build_effective_env(environ: Mapping[str, str] | None = None) -> dict[str, s
 def detect_unknown_guardrails_vars(
     environ: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
-    """Inspect environment keys only and return any unrecognized GUARDRAILS_* names."""
-    env = os.environ if environ is None else environ
+    """Inspect process and explicit env-file keys and return unrecognized GUARDRAILS_* names."""
+    file_vars, process_env = _resolve_env_sources(environ)
+    merged_keys = dict.fromkeys((*file_vars.keys(), *process_env.keys()))
     return tuple(
         key
-        for key in env
+        for key in merged_keys
         if key.upper().startswith("GUARDRAILS_") and key not in ALL_KNOWN_GUARDRAILS_VARS
     )
 
@@ -578,6 +599,21 @@ class Settings(BaseModel):
         stripped = value.strip()
         return stripped or None
 
+    @model_validator(mode="after")
+    def _validate_cross_field_invariants(self) -> Settings:
+        if self.require_auth and not self.api_key.get_secret_value().strip():
+            raise ValueError(
+                "GUARDRAILS_REQUIRE_AUTH is true but GUARDRAILS_API_KEY is empty"
+            )
+        if (
+            self.rate_limit_backend == "redis"
+            and not self.rate_limit_redis_url.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "GUARDRAILS_RATE_LIMIT_BACKEND is 'redis' but GUARDRAILS_RATE_LIMIT_REDIS_URL is empty"
+            )
+        return self
+
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] | None = None) -> Settings:
         """Instantiate validated ``Settings`` from process env and optional ``GUARDRAILS_ENV_FILE``."""
@@ -598,9 +634,21 @@ class Settings(BaseModel):
             details: list[tuple[str, str]] = []
             for err in exc.errors(include_url=False, include_input=False):
                 loc = err.get("loc", ())
-                attr = str(loc[0]) if loc else ""
-                env_name = API_SETTINGS_ENV_BY_ATTR.get(attr, attr or "CONFIGURATION")
-                err_type = str(err.get("type", "validation_error"))
+                if loc:
+                    attr = str(loc[0])
+                    env_name = API_SETTINGS_ENV_BY_ATTR.get(attr, attr)
+                    err_type = str(err.get("type", "validation_error"))
+                else:
+                    msg = str(err.get("msg", ""))
+                    if "GUARDRAILS_REQUIRE_AUTH" in msg:
+                        env_name = "GUARDRAILS_REQUIRE_AUTH / GUARDRAILS_API_KEY"
+                        err_type = "cross_field_validation"
+                    elif "GUARDRAILS_RATE_LIMIT_BACKEND" in msg:
+                        env_name = "GUARDRAILS_RATE_LIMIT_BACKEND / GUARDRAILS_RATE_LIMIT_REDIS_URL"
+                        err_type = "cross_field_validation"
+                    else:
+                        env_name = "CONFIGURATION"
+                        err_type = str(err.get("type", "validation_error"))
                 details.append((env_name, err_type))
             sanitized_details = tuple(details)
 
