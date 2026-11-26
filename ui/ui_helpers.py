@@ -16,6 +16,41 @@ GATE_LOGIN = "login"                # ask for the UI password first
 GATE_LOCKED = "locked"              # key present but UI unprotected: refuse
 GATE_OPEN_WARN = "open_warn"        # explicitly allowed anonymous: show a warning
 
+_TRUE_VALUES = frozenset({"true", "1", "yes", "on", "y", "t"})
+_FALSE_VALUES = frozenset({"false", "0", "no", "off", "n", "f"})
+
+
+def normalize_secret(raw: str | None) -> str:
+    """Strip surrounding whitespace from an optional UI secret value."""
+    if raw is None:
+        return ""
+    return raw.strip()
+
+
+def parse_strict_bool(raw: str | None, default: bool, name: str) -> bool:
+    """Parse an optional boolean environment string strictly without exposing bad input."""
+    if raw is None:
+        return default
+
+    if not isinstance(raw, str):
+        raise ValueError(
+            f"{name} must be a boolean (true/false, 1/0, yes/no, on/off)"
+        )
+
+    stripped = raw.strip()
+    if not stripped:
+        return default
+
+    lowered = stripped.lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+
+    raise ValueError(
+        f"{name} must be a boolean (true/false, 1/0, yes/no, on/off)"
+    )
+
 
 def normalize_api_url(raw: str) -> tuple[str, str]:
     """Return ``(base_url, analyze_url)``.

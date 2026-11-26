@@ -12,6 +12,8 @@ from ui_helpers import (
     evaluate_gate,
     format_reason_line,
     normalize_api_url,
+    normalize_secret,
+    parse_strict_bool,
     password_matches,
 )
 
@@ -27,11 +29,18 @@ API_KEY = os.getenv("GUARDRAILS_API_KEY", "").strip()
 
 # The UI lends its API key to whoever can open the page, so it is locked
 # unless a UI password is set (or anonymous use is explicitly allowed).
-UI_PASSWORD = os.getenv("GUARDRAILS_UI_PASSWORD", "")
+UI_PASSWORD = normalize_secret(os.getenv("GUARDRAILS_UI_PASSWORD"))
 
-UI_ALLOW_ANONYMOUS = os.getenv(
-    "GUARDRAILS_UI_ALLOW_ANONYMOUS", ""
-).strip().lower() in ("true", "1", "yes", "on")
+try:
+    UI_ALLOW_ANONYMOUS = parse_strict_bool(
+        os.getenv("GUARDRAILS_UI_ALLOW_ANONYMOUS"),
+        default=False,
+        name="GUARDRAILS_UI_ALLOW_ANONYMOUS",
+    )
+    _UI_ALLOW_ANONYMOUS_ERROR = False
+except ValueError:
+    UI_ALLOW_ANONYMOUS = False
+    _UI_ALLOW_ANONYMOUS_ERROR = True
 
 st.set_page_config(
     page_title="SentraGuard Lite",
@@ -43,6 +52,13 @@ st.title("🛡️ SentraGuard Lite")
 st.caption("Offline AI Guardrails Gateway")
 
 st.divider()
+
+if _UI_ALLOW_ANONYMOUS_ERROR:
+    st.error(
+        "Invalid configuration for GUARDRAILS_UI_ALLOW_ANONYMOUS. "
+        "Check deployment settings."
+    )
+    st.stop()
 
 # --------------------------------------------------
 # Access gate
