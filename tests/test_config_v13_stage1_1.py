@@ -480,9 +480,10 @@ def _verify_spec_default_consistency(
 
     expected_display = _expected_default_display_from_runtime(instance_default, spec)
     if spec.default_display != expected_display:
+        metadata_repr = "<redacted>" if is_sensitive else repr(spec.default_display)
         raise AssertionError(
             f"{spec.env_var} ({spec.python_attr}) default_display mismatch: "
-            f"metadata={spec.default_display!r} vs runtime_derived={expected_display!r} "
+            f"metadata={metadata_repr} vs runtime_derived={expected_display!r} "
             f"(runtime_default={_format_safe_value(instance_default, sensitive=is_sensitive)})"
         )
 
@@ -714,6 +715,39 @@ def test_f3_sensitive_plain_string_default_never_leaks_and_plain_string_display_
     )
     assert _expected_default_display_from_runtime("custom-mode", spec_ordinary) == '"custom-mode"'
     _verify_spec_default_consistency(spec_ordinary, "custom-mode", "custom-mode")
+
+
+def test_f3_sensitive_metadata_display_never_leaks_and_nonsensitive_preserved():
+    sentinel = "metadata-secret-sentinel-DO-NOT-LEAK"
+
+    spec_sensitive = _dummy_spec(
+        env_var="GUARDRAILS_SENSITIVE_DISPLAY",
+        python_attr="sensitive_display",
+        default_display=sentinel,
+        sensitive=True,
+    )
+    with pytest.raises(AssertionError) as exc_sensitive:
+        _verify_spec_default_consistency(spec_sensitive, SecretStr(""), SecretStr(""))
+    sensitive_text = str(exc_sensitive.value)
+    sensitive_repr = repr(exc_sensitive.value)
+    assert "GUARDRAILS_SENSITIVE_DISPLAY (sensitive_display)" in sensitive_text
+    assert "<redacted>" in sensitive_text
+    assert sentinel not in sensitive_text
+    assert sentinel not in sensitive_repr
+
+    # Non-sensitive metadata mismatch must keep metadata and runtime display values visible.
+    spec_non_sensitive = _dummy_spec(
+        env_var="GUARDRAILS_MAX_DOC_CHARS",
+        python_attr="max_doc_chars",
+        default_display="99999",
+        sensitive=False,
+    )
+    with pytest.raises(AssertionError) as exc_plain:
+        _verify_spec_default_consistency(spec_non_sensitive, 50000, 50000)
+    plain_text = str(exc_plain.value)
+    assert "GUARDRAILS_MAX_DOC_CHARS (max_doc_chars)" in plain_text
+    assert "'99999'" in plain_text
+    assert "'50000'" in plain_text
 
 
 # ---------------------------------------------------------------------------
