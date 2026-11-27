@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **Typed configuration schema & registry (V13-002)**: Added Pydantic-backed configuration loading and canonical metadata (`app/config.py`, `app/config_specs.py`) preserving existing runtime configuration globals and validation semantics.
+- **Opt-in dotenv loading (`GUARDRAILS_ENV_FILE`)**: Added explicit dotenv file loading with three-tier precedence (process environment > explicit `GUARDRAILS_ENV_FILE` > schema defaults), strict literal-dollar (`$`) handling, and non-fallback empty variable semantics.
+- **Strict environment checking (`GUARDRAILS_STRICT_ENV`)**: Added unknown `GUARDRAILS_*` environment-variable detection during FastAPI lifespan startup (logging warnings in permissive mode and failing startup when `GUARDRAILS_STRICT_ENV=true`).
+- **Configuration documentation generator & sync guard**: Added `scripts/generate_config_docs.py` (`--check` / `--write`), updated `docs/configuration.md` and `.env.example`, and added documentation synchronization tests (`tests/test_config_docs_sync.py`).
+- **CI matrix expansion**: Added Python `3.15` to the GitHub Actions unit-test workflow matrix alongside existing Python `3.11` and `3.14` targets.
+- **Security & compatibility regression suite**: Added V13-002 configuration, dotenv, unknown-variable, secret anti-leakage, and UI boolean parsing regression coverage (`tests/test_config_v13.py`, `tests/test_ui_helpers.py`).
+
+### Security
+- **Strict UI boolean parsing & fail-closed startup**: Enforced strict boolean parsing for `GUARDRAILS_UI_ALLOW_ANONYMOUS` (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) in the UI without importing `app` or `pydantic` or echoing invalid secret-bearing values.
+- **Secret masking & diagnostic hardening**: Protected sensitive configuration fields with `SecretStr` and redacted diagnostics across `ConfigError`, repr/str, tracebacks, and API startup/error paths.
+
 ---
 
 ## 1.2.1 - 2026-11-17
