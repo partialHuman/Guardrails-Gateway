@@ -51,6 +51,16 @@ from app.schemas import AnalyzeRequest, AnalyzeResponse
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Validate configuration on application startup."""
+    unknown_vars = config.detect_unknown_guardrails_vars()
+    if unknown_vars:
+        sanitized_keys = [sanitize_for_log(key) for key in unknown_vars]
+        if config.get_settings().strict_env:
+            raise config.ConfigError(
+                "Unrecognized configuration variable(s): " + ", ".join(sanitized_keys)
+            )
+        for sanitized_key in sanitized_keys:
+            logger.warning("Unrecognized configuration variable ignored: %s", sanitized_key)
+
     validate_auth_config(
         config.REQUIRE_AUTH,
         config.API_KEY,

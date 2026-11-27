@@ -17,8 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (Docker image) and the newest used for development.
-        python-version: ["3.11", "3.14"]
+        # Oldest supported (Docker image) and newer supported Python versions.
+        python-version: ["3.11", "3.14", "3.15"]
 
     steps:
       - name: Check out repository

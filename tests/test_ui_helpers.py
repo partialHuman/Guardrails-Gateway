@@ -2,6 +2,9 @@
 
 import ast
 import pathlib
+import subprocess
+import sys
+import types
 
 import pytest
 
@@ -10,13 +13,18 @@ from ui.ui_helpers import (
     GATE_LOGIN,
     GATE_OPEN,
     GATE_OPEN_WARN,
+    _FALSE_VALUES,
+    _TRUE_VALUES,
     describe_http_error,
     evaluate_gate,
     format_reason_line,
     normalize_api_url,
+    normalize_secret,
+    parse_strict_bool,
     password_matches,
 )
 
+UI_HELPERS_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "ui" / "ui_helpers.py"
 UI_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "ui" / "streamlit_app.py"
 
 
@@ -156,3 +164,123 @@ def test_ui_stops_before_the_form_when_locked():
     form = source.index('st.subheader("Metadata")')
 
     assert gate < stop < form
+
+
+# --- strict UI boolean & isolation checks (V13-002 Stage 5) ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["true", "TRUE", " True ", "1", "yes", "on", "y", "t"],
+)
+def test_parse_strict_bool_truthy_tokens(token):
+    assert parse_strict_bool(token, False, "GUARDRAILS_UI_ALLOW_ANONYMOUS") is True
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["false", "FALSE", " False ", "0", "no", "off", "n", "f"],
+)
+def test_parse_strict_bool_falsy_tokens(token):
+    assert parse_strict_bool(token, True, "GUARDRAILS_UI_ALLOW_ANONYMOUS") is False
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+@pytest.mark.parametrize("default", [False, True])
+def test_parse_strict_bool_preserves_default_when_unset_or_blank(raw, default):
+    assert parse_strict_bool(raw, default, "GUARDRAILS_UI_ALLOW_ANONYMOUS") is default
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["enabled", "2", "tru", "maybe", "ui-bool-secret-sentinel-DO-NOT-LEAK"],
+)
+def test_parse_strict_bool_rejects_invalid_values_without_leaking_input(invalid):
+    expected_msg = (
+        "GUARDRAILS_UI_ALLOW_ANONYMOUS must be a boolean "
+        "(true/false, 1/0, yes/no, on/off)"
+    )
+    with pytest.raises(ValueError) as exc_info:
+        parse_strict_bool(invalid, False, "GUARDRAILS_UI_ALLOW_ANONYMOUS")
+    assert str(exc_info.value) == expected_msg
+    if len(invalid) > 5:
+        assert invalid not in repr(exc_info.value)
+
+
+def test_normalize_secret_and_boolean_constant_parity():
+    import app.config as config
+
+    assert _TRUE_VALUES == config._TRUE_VALUES
+    assert _FALSE_VALUES == config._FALSE_VALUES
+    assert normalize_secret(None) == ""
+    assert normalize_secret("   ") == ""
+    assert normalize_secret("  ui-secret  ") == "ui-secret"
+
+
+def test_ui_modules_do_not_import_app_or_pydantic():
+    for src_path in (UI_HELPERS_SOURCE, UI_SOURCE):
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] not in {"app", "pydantic", "pydantic_core"}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module.split(".")[0] not in {"app", "pydantic", "pydantic_core"}
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "from ui import ui_helpers\n"
+                "assert ui_helpers.parse_strict_bool('yes', False, 'GUARDRAILS_UI_ALLOW_ANONYMOUS') is True\n"
+                "assert 'app' not in sys.modules\n"
+                "assert 'app.config' not in sys.modules\n"
+                "assert 'pydantic' not in sys.modules\n"
+            ),
+        ],
+        cwd=UI_SOURCE.parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.returncode == 0
+
+
+def test_streamlit_app_stops_on_invalid_allow_anonymous_without_exposing_value(monkeypatch):
+    class _StopUI(RuntimeError):
+        pass
+
+    events: list[tuple[str, str]] = []
+    fake_st = types.ModuleType("streamlit")
+    fake_st.session_state = {}
+    fake_st.set_page_config = lambda **kw: events.append(("config", ""))
+    fake_st.title = lambda txt: events.append(("title", txt))
+    fake_st.caption = lambda txt: events.append(("caption", txt))
+    fake_st.divider = lambda: events.append(("divider", ""))
+    fake_st.error = lambda txt: events.append(("error", txt))
+    fake_st.warning = lambda txt: events.append(("warning", txt))
+    fake_st.subheader = lambda txt: events.append(("subheader", txt))
+    fake_st.stop = lambda: (_ for _ in ()).throw(_StopUI("stopped"))
+
+    from ui import ui_helpers
+
+    bad_secret = "invalid-ui-bool-secret-XYZ"
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setitem(sys.modules, "requests", types.ModuleType("requests"))
+    monkeypatch.setitem(sys.modules, "ui_helpers", ui_helpers)
+    monkeypatch.setenv("GUARDRAILS_API_KEY", "gw-secret-key")
+    monkeypatch.delenv("GUARDRAILS_UI_PASSWORD", raising=False)
+    monkeypatch.setenv("GUARDRAILS_UI_ALLOW_ANONYMOUS", bad_secret)
+
+    ns: dict = {"__name__": "__main__", "__file__": str(UI_SOURCE)}
+    with pytest.raises(_StopUI):
+        exec(compile(UI_SOURCE.read_text(encoding="utf-8"), str(UI_SOURCE), "exec"), ns)
+
+    error_msgs = [msg for kind, msg in events if kind == "error"]
+    assert len(error_msgs) == 1
+    assert "GUARDRAILS_UI_ALLOW_ANONYMOUS" in error_msgs[0]
+    assert bad_secret not in error_msgs[0]
+    assert "_gate" not in ns
+    assert not any(kind in {"warning", "subheader"} for kind, _ in events)
